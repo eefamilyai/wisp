@@ -51,6 +51,21 @@ impl Backend {
         }
     }
 
+    /// The engine to ask when the first transcript led nowhere.
+    ///
+    /// The old answer was always Whisper with the configured model, and that
+    /// model was `large-v3-turbo`: 574 MB and 9.3 seconds a clip on this CPU, to
+    /// re-hear a command that had already failed once. Anything installed that is
+    /// a *different* recogniser is a better second opinion than a slow one, so
+    /// prefer SenseVoice (a different architecture, 0.3 s), then the other
+    /// Moonshine pack, then Whisper — and None when nothing else is installed,
+    /// rather than a second pass that cannot work.
+    pub fn second_opinion(self) -> Option<Backend> {
+        [Backend::SenseVoice, Backend::SenseVoiceNano, Backend::Moonshine, Backend::Whisper]
+            .into_iter()
+            .find(|b| *b != self && Stt::installed(*b))
+    }
+
     /// Parse a name, for `--bench-stt`.
     pub fn parse(s: &str) -> Option<Backend> {
         match s.to_lowercase().replace('_', "-").as_str() {
@@ -95,47 +110,54 @@ pub struct Stt {
 }
 
 impl Stt {
-    /// Build a recogniser for this config, honouring the engine choice and
-    /// falling back to whatever will actually run.
-    pub fn new(cfg: &Config) -> Self {
-        let whisper_path = nv_core::whisper_model_path(&cfg.whisper_model);
-        let mut backend = match cfg.stt_engine {
+    /// Which engine this config will actually run.
+    ///
+    /// A chosen engine whose files were never downloaded must not leave the
+    /// assistant unable to hear anything — which is what "I changed the model and
+    /// now it just disengages" was: SenseVoice was selected, its model was not
+    /// installed, and every command came back empty. In preference order, so a
+    /// machine with several engines picks the fastest accurate one.
+    pub fn resolve(cfg: &Config) -> Backend {
+        let wanted = match cfg.stt_engine {
             SttEngine::Moonshine => {
-                if !nv_core::moonshine_installed() {
+                if nv_core::moonshine_v2_installed() {
+                    Backend::Moonshine2
+                } else if nv_core::moonshine_installed() {
+                    Backend::Moonshine
+                } else {
                     log::warn!(
-                        "Moonshine files are not in {} — using Whisper until they are downloaded",
+                        "Moonshine files are not in {} — using another engine until they are downloaded",
                         nv_core::moonshine_dir().display()
                     );
                     Backend::Whisper
-                } else if nv_core::moonshine_v2_installed() {
-                    Backend::Moonshine2
-                } else {
-                    Backend::Moonshine
                 }
             }
             SttEngine::Whisper => Backend::Whisper,
             SttEngine::SenseVoice => Backend::SenseVoice,
         };
-        // A chosen engine whose files were never downloaded must not leave the
-        // assistant unable to hear anything — which is what "I changed the model
-        // and now it just disengages" was: SenseVoice was selected, its model was
-        // not installed, and every command came back empty.
-        if !Stt::installed(backend) {
-            let fallback = [Backend::Moonshine2, Backend::Moonshine, Backend::Whisper]
-                .into_iter()
-                .find(|b| Stt::installed(*b));
-            match fallback {
-                Some(b) => {
-                    log::warn!(
-                        "the {} model is not installed — using {} until it is",
-                        backend.name(),
-                        b.name()
-                    );
-                    backend = b;
-                }
-                None => log::error!("no speech model is installed: download one in Settings > Listening"),
+        if Stt::installed(wanted) {
+            return wanted;
+        }
+        let fallback = [Backend::Moonshine2, Backend::SenseVoice, Backend::Moonshine, Backend::Whisper]
+            .into_iter()
+            .find(|b| Stt::installed(*b));
+        match fallback {
+            Some(b) => {
+                log::warn!("the {} model is not installed — using {} until it is", wanted.name(), b.name());
+                b
+            }
+            None => {
+                log::error!("no speech model is installed: download one in Settings > Listening");
+                wanted
             }
         }
+    }
+
+    /// Build a recogniser for this config, honouring the engine choice and
+    /// falling back to whatever will actually run.
+    pub fn new(cfg: &Config) -> Self {
+        let whisper_path = nv_core::whisper_model_path(&cfg.whisper_model);
+        let backend = Stt::resolve(cfg);
         Stt {
             backend,
             threads: cfg.threads as i32,

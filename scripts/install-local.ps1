@@ -66,8 +66,38 @@ if (Test-Path $streamSrc) {
     Write-Host "installed the streaming model (live transcript)"
 }
 
-# Any Whisper model the config asks for that the install does not have.
 $cfgFile = Join-Path $env:APPDATA "NeedleVoice\config.toml"
+
+# The model behind the wake word and the command brain: without needle3.cact the
+# agent answers every command with a web search, which is what "it doesn't
+# understand anything" looked like.
+foreach ($must in @("needle3.cact")) {
+    $src = Join-Path $devModels $must
+    $dst = Join-Path $instModels $must
+    if ((Test-Path $src) -and -not (Test-Path $dst)) {
+        Copy-Item $src $dst -Force
+        Write-Host "installed $must"
+    }
+}
+
+# The voice pack the config names. A voice pack that is missing is not an error
+# the agent can show — it falls back to the Windows voice and the user hears a
+# different assistant — so install it before the agent starts.
+if (Test-Path $cfgFile) {
+    $engine = (Select-String -Path $cfgFile -Pattern '^\s*voice_engine\s*=\s*"([^"]+)"').Matches.Groups[1].Value
+    $kokoro = (Select-String -Path $cfgFile -Pattern '^\s*kokoro_voice\s*=').Matches.Count -gt 0
+    if ($engine -eq "kokoro" -and $kokoro) {
+        $pack = "kokoro-multi-lang-v1_0"
+        $from = Join-Path $devModels "voices\$pack"
+        $to = Join-Path $instModels "voices\$pack"
+        if ((Test-Path $from) -and -not (Test-Path (Join-Path $to "voices.bin"))) {
+            Copy-Item $from $to -Recurse -Force
+            Write-Host "installed the $pack voices"
+        }
+    }
+}
+
+# Any Whisper model the config asks for that the install does not have.
 if (Test-Path $cfgFile) {
     $wanted = (Select-String -Path $cfgFile -Pattern '^\s*whisper_model\s*=\s*"([^"]+)"').Matches.Groups[1].Value
     if ($wanted) {

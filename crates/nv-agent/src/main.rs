@@ -41,6 +41,60 @@ pub fn spawn_app_scan(cfg: Config, apps: Arc<RwLock<AppIndex>>) {
         .ok();
 }
 
+/// Say once, at startup, what is installed for listening and speaking.
+///
+/// The two failures that cost the most time in this project were both silent: a
+/// chosen engine whose model was never downloaded, and a voice that could not
+/// phonemise its language. Neither raised an error anyone saw; both presented as
+/// "it doesn't work". One line each turns a silent failure into a readable one.
+fn report_audio_setup(cfg: &Config) {
+    use stt::Backend;
+    let engines: Vec<&str> = [
+        Backend::Moonshine2,
+        Backend::Moonshine,
+        Backend::SenseVoice,
+        Backend::SenseVoiceNano,
+        Backend::Dolphin,
+        Backend::Whisper,
+    ]
+    .into_iter()
+    .filter(|b| stt::Stt::installed(*b))
+    .map(|b| b.name())
+    .collect();
+    if engines.is_empty() {
+        log::error!(
+            "no speech model is installed in {} — download one in Settings > Listening",
+            nv_core::paths::models_dir().display()
+        );
+    } else {
+        log::info!("speech engines installed: {}", engines.join(", "));
+    }
+
+    let voice = match cfg.voice_engine {
+        nv_core::voices::Engine::Kokoro => {
+            if nv_core::voices::is_installed(nv_core::voices::KOKORO_PACK) {
+                format!("Kokoro {}", cfg.kokoro_voice)
+            } else {
+                log::error!("Kokoro is selected but not installed — Settings > Voice can fetch it");
+                "the Windows voice".to_string()
+            }
+        }
+        nv_core::voices::Engine::Piper => {
+            if nv_core::voices::is_installed(&cfg.piper_voice) {
+                format!("Piper {}", cfg.piper_voice)
+            } else {
+                log::warn!("Piper {} is not installed", cfg.piper_voice);
+                "the Windows voice".to_string()
+            }
+        }
+        nv_core::voices::Engine::System => "the Windows voice".to_string(),
+    };
+    log::info!(
+        "voice: {voice}; wake model: {}",
+        if nv_core::wake_model::is_installed() { "installed" } else { "missing (Whisper fallback)" }
+    );
+}
+
 /// The samples of a 16 kHz mono 16-bit WAV, found by the `data` chunk rather
 /// than assumed to start at byte 44 — plenty of writers put a `LIST` or `fact`
 /// chunk in front of it, and the audio would then be read one chunk-header's
@@ -239,7 +293,10 @@ fn main() {
             Some(j) => Config::load_from(std::path::Path::new(args.get(j + 1).map(String::as_str).unwrap_or(""))),
             None => Config::load(),
         };
-        tts::speak_once(&cfg, &text);
+        if !tts::speak_once(&cfg, &text) {
+            eprintln!("nothing could speak that line — see the log for why");
+            std::process::exit(1);
+        }
         return;
     }
 
@@ -263,6 +320,7 @@ fn main() {
         let _ = cfg.save();
     }
     log::info!("NeedleVoice {} starting", env!("CARGO_PKG_VERSION"));
+    report_audio_setup(&cfg);
 
     // Needle's parallel kernels use rayon; cap them at the configured thread count.
     std::env::set_var("RAYON_NUM_THREADS", cfg.threads.to_string());

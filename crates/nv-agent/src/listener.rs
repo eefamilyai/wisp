@@ -20,7 +20,7 @@ use crate::bubble::Mode;
 use crate::tts::Tts;
 use nv_core::personality::{self, Moment, Outcome};
 use crate::overlay::Shared;
-use crate::stt::{Backend, Stt};
+use crate::stt::Stt;
 
 const FRAME: usize = 480; // 30 ms at 16 kHz
 const FRAME_MS: u32 = 30;
@@ -97,12 +97,17 @@ pub fn run(cfg: Config, shared: Arc<Shared>, apps: Arc<RwLock<AppIndex>>, tts: A
                 // used when the fast engine's transcript leads nowhere — which is
                 // where accuracy is worth seconds.
                 let mut careful: Option<Stt> = None;
+                let opinion = Stt::resolve(&cfg).second_opinion();
+                if let Some(b) = opinion {
+                    log::info!("second opinion: {} (when a command is not understood)", b.name());
+                }
                 while let Ok((mut command, audio)) = cmd_rx.recv() {
                     let outcome =
                         handle_command(&command, &cfg, &mut brain, &apps, &shared, &tts, speaker.as_ref());
                     if !outcome && audio.len() > crate::audio::RATE as usize / 3 {
                         if careful.is_none() {
-                            careful = Some(Stt::with(Backend::Whisper, cfg.threads, &cfg.agent_name, &cfg.whisper_model));
+                            careful = opinion
+                                .map(|b| Stt::with(b, cfg.threads, &cfg.agent_name, &cfg.whisper_model));
                         }
                         if let Some(second) = careful.as_mut() {
                             if let Ok(better) = second.transcribe(&audio) {

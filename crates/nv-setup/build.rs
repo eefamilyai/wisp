@@ -35,9 +35,12 @@ fn main() {
     .map(|f| (rel.join(f), f.to_string()))
     .chain([
         (models.join("needle3.cact"), "models/needle3.cact".into()),
-        // One small Whisper, so switching engine in Settings works straight
-        // away; the bigger ones are a download.
-        (models.join("ggml-base.en-q5_1.bin"), "models/ggml-base.en-q5_1.bin".into()),
+        // Whisper is no longer shipped. It was here as "one small one, so
+        // switching engine works straight away", but the two engines that
+        // actually run here are Moonshine v2 and SenseVoice, both of which ship
+        // in full — and the 57 MB this costs is the difference between an
+        // installer under 500 MB and one over it. Settings still lists every
+        // Whisper model, and still downloads the one you pick.
     ])
     .collect();
 
@@ -70,6 +73,19 @@ fn main() {
     let kws_dir = models.join("kws").join(kws);
     assert!(kws_dir.join("tokens.txt").exists(), "missing the wake-word model — run scripts\\fetch-models.ps1");
 
+    // The second opinion. Whisper large-v3-turbo (574 MB, 9.3 s a clip) used to
+    // be asked to re-hear every command that failed — slower than the command it
+    // was rescuing. SenseVoice is a different architecture, 237 MB, and answers in
+    // 0.3 s, so it can actually be asked. "You may use 500 MB for a faster, more
+    // effective model" buys this plus Moonshine v2 and still leaves change.
+    let second_pack = "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09";
+    let second_dir = models.join("sensevoice").join(second_pack);
+    assert!(
+        second_dir.join("model.int8.onnx").exists(),
+        "missing the SenseVoice model at {} — run scripts\\fetch-models.ps1",
+        second_dir.display()
+    );
+
     // The streaming model behind the live transcript. Without it a fresh install
     // has the caption switched on and nothing to show, which looks like a broken
     // setting rather than a missing download.
@@ -85,7 +101,7 @@ fn main() {
         println!("cargo:rerun-if-changed={}", src.display());
         assert!(src.exists(), "missing {} — build nv-agent and nv-config in release first", src.display());
     }
-    for dir in [&voice_dir, &kws_dir, &moonshine_dir, &streaming_dir] {
+    for dir in [&voice_dir, &kws_dir, &moonshine_dir, &streaming_dir, &second_dir] {
         println!("cargo:rerun-if-changed={}", dir.display());
     }
 
@@ -101,6 +117,7 @@ fn main() {
         add_dir(&mut tar, &kws_dir, &format!("models/kws/{kws}"));
         add_dir(&mut tar, &moonshine_dir, &format!("models/moonshine/{moonshine_pack}"));
         add_dir(&mut tar, &streaming_dir, &format!("models/streaming/{streaming_pack}"));
+        add_dir(&mut tar, &second_dir, &format!("models/sensevoice/{second_pack}"));
         tar.finish().unwrap();
     }
     enc.finish().unwrap();

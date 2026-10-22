@@ -67,9 +67,27 @@ impl Tts {
                             voice = Voice::load(&cfg);
                         }
                         shared.set_speaking(true);
-                        match &voice {
+                        let spoke = match &voice {
                             Some(v) => v.speak(&text, &cfg, &shared, &mut player),
-                            None => log::warn!("no voice available"),
+                            None => false,
+                        };
+                        if !spoke {
+                            // A voice that cannot phonemise, or a model that will
+                            // not load, must not leave the assistant mute with
+                            // nothing to show for it but a line in the log — the
+                            // British Kokoro voices did exactly that, silently, for
+                            // every reply. The Windows voice is always installed,
+                            // so say this line with it and keep it for the rest of
+                            // the session instead of retrying a voice that cannot
+                            // speak.
+                            log::warn!("the configured voice produced no audio — using the Windows voice instead");
+                            match nv_core::voice::Speaker::new("", 0, cfg.voice_volume) {
+                                Ok(s) => {
+                                    s.say(&text);
+                                    voice = Some(Voice::System(s));
+                                }
+                                Err(e) => log::error!("no voice at all: {e}"),
+                            }
                         }
                         shared.set_level(0.0);
                         shared.set_speaking(false);
@@ -170,16 +188,39 @@ pub fn synthesize_to_wav(cfg: &Config, text: &str, out: &std::path::Path) -> Res
     std::fs::write(out, bytes).map_err(|e| e.to_string())
 }
 
-/// Speak once and return (used by the config app's "Preview voice").
-pub fn speak_once(cfg: &Config, text: &str) {
+/// Speak once (used by the config app's "Preview voice" and `--say`), and say
+/// whether anything came out.
+///
+/// The preview has the same problem the agent has: a voice that cannot
+/// phonemise returns no audio and no error, so a "preview" that says nothing
+/// looks like a broken button rather than a broken voice. Fall back to the
+/// Windows voice so the preview always demonstrates *something*, and report it.
+pub fn speak_once(cfg: &Config, text: &str) -> bool {
     nv_core::win::com_init();
     let shared = Shared::new();
-    match Voice::load(cfg) {
+    let spoke = match Voice::load(cfg) {
         Some(v) => {
             let mut player = None;
             v.speak(text, cfg, &shared, &mut player)
         }
-        None => log::warn!("preview: voice unavailable"),
+        None => false,
+    };
+    if spoke {
+        return true;
+    }
+    log::warn!("the configured voice produced no audio — using the Windows voice instead");
+    match nv_core::voice::Speaker::new("", 0, cfg.voice_volume) {
+        Ok(s) => {
+            s.say(text);
+            // Give the Windows voice the same drain time the neural path gets,
+            // or the process exits on the first syllable.
+            std::thread::sleep(Duration::from_millis(400));
+            true
+        }
+        Err(e) => {
+            log::error!("no voice at all: {e}");
+            false
+        }
     }
 }
 
@@ -267,15 +308,23 @@ impl Voice {
         v
     }
 
-    fn speak(&self, text: &str, cfg: &Config, shared: &Arc<Shared>, player: &mut Option<Player>) {
+    /// Speak `text`, and report whether any sound left the device.
+    ///
+    /// The answer is not a formality: a voice whose model will not load, or
+    /// whose phonemiser rejects the language, returns `false` here rather than a
+    /// silent reply the caller cannot tell apart from a spoken one.
+    fn speak(&self, text: &str, cfg: &Config, shared: &Arc<Shared>, player: &mut Option<Player>) -> bool {
         match self {
-            Voice::System(s) => s.say(text),
+            Voice::System(s) => {
+                s.say(text);
+                true
+            }
             Voice::Neural { tts, sid } => {
                 let _ = tts;
                 // Kept open between replies: closing and reopening the stream is
                 // what lets the device fall asleep in the first place. The wake
                 // word normally opens it first, in time to wake a Bluetooth link.
-                let Some(player) = ensure_player_from(self, cfg, shared, player) else { return };
+                let Some(player) = ensure_player_from(self, cfg, shared, player) else { return false };
                 player.prime();
                 // Each sentence arrives through the callback as soon as it's
                 // synthesised, so playback starts before the whole reply is done.
@@ -293,12 +342,21 @@ impl Voice {
                         true
                     }),
                 );
-                if !*pushed.lock().unwrap() {
+                let streamed = *pushed.lock().unwrap();
+                if !streamed {
                     if let Some(a) = &audio {
                         queue.push(a.samples());
                     }
                 }
+                let spoke = streamed || audio.is_some();
                 player.finish();
+                if !spoke {
+                    // sherpa-onnx returns None and prints its reason to stderr,
+                    // which a windowed process does not have. Say it here, where
+                    // the log can see it.
+                    log::error!("synthesis produced no audio for {text:?} — the voice cannot speak this line");
+                }
+                spoke
             }
         }
     }
@@ -333,7 +391,13 @@ fn load_kokoro(name: &str, threads: u32) -> Option<(OfflineTts, i32)> {
     c.model.kokoro.tokens = s(&dir.join("tokens.txt"));
     c.model.kokoro.data_dir = s(&dir.join("espeak-ng-data"));
     c.model.kokoro.lexicon = s(&dir.join(if british { "lexicon-gb-en.txt" } else { "lexicon-us-en.txt" }));
-    c.model.kokoro.lang = Some(if british { "en-gb" } else { "en-us" }.into());
+    // The name here is an espeak-ng *language*, not a Kokoro voice code, and it
+    // has to be one the packed `espeak-ng-data` actually contains: `lang/gmw/en`
+    // for British English and `lang/gmw/en-US` for American. "en-gb" is neither
+    // — espeak looks for `lang/gmw/en-gb`, does not find it, and returns "Failed
+    // to set eSpeak-ng voice" for every line, so every British voice (bm_*,
+    // bf_*) was completely silent. That is what "I can't hear shit" was.
+    c.model.kokoro.lang = Some(if british { "en" } else { "en-us" }.into());
     c.model.num_threads = threads.min(8) as i32;
     c.max_num_sentences = 1;
     OfflineTts::create(&c).map(|t| (t, v.sid))
@@ -522,6 +586,12 @@ impl Player {
         }
         .map_err(|e| e.to_string())?;
         stream.play().map_err(|e| e.to_string())?;
+        // The device is open and consuming. Whether it is *audible* is a separate
+        // question Windows will happily answer with silence, so ask before the
+        // first reply rather than after a silent one.
+        if let Some(note) = nv_core::win::ensure_audible() {
+            log::warn!("{} — {note}", device_name(&device));
+        }
         let feeder = Feeder {
             queue,
             step: src_rate as f64 / rate as f64,

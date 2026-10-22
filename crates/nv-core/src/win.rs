@@ -707,6 +707,42 @@ pub fn muted() -> Option<bool> {
     unsafe { v.GetMute() }.ok().map(|m| m.as_bool())
 }
 
+/// Make sure the endpoint the assistant speaks into can actually be heard.
+///
+/// A perfect pipeline into a muted device is silence, and nothing in the app
+/// could tell the difference between that and a bug: the stream opens, the
+/// samples are consumed, the player reports healthy. Windows keeps per-device
+/// volume, so this happens more easily than it sounds — a default speaker pair
+/// sitting at 0% looked exactly like a working install from inside the process.
+///
+/// A muted endpoint is un-muted, and a volume under 5% is raised to 50%.
+/// Anything already audible is left exactly as it is, so a quiet room stays
+/// quiet. Returns a sentence describing what was changed, for the log.
+pub fn ensure_audible() -> Option<String> {
+    const AUDIBLE_FLOOR: u8 = 5;
+    const AUDIBLE_TARGET: u8 = 50;
+    let mut changed = Vec::new();
+    if muted() == Some(true) {
+        match set_muted(false) {
+            Ok(()) => changed.push("it was muted".to_string()),
+            Err(e) => return Some(format!("the speakers are muted and would not un-mute: {e}")),
+        }
+    }
+    if let Some(percent) = volume_percent() {
+        if percent < AUDIBLE_FLOOR {
+            match set_volume_percent(AUDIBLE_TARGET) {
+                Ok(_) => changed.push(format!("its volume was {percent}%")),
+                Err(e) => return Some(format!("the speakers are at {percent}% and would not turn up: {e}")),
+            }
+        }
+    }
+    if changed.is_empty() {
+        None
+    } else {
+        Some(format!("{}, raised so a reply can be heard", changed.join(" and ")))
+    }
+}
+
 pub fn set_muted(on: bool) -> Result<(), String> {
     match endpoint_volume() {
         Some(v) => unsafe { v.SetMute(on, std::ptr::null()) }.map_err(|e| format!("Windows refused the mute: {e}")),
