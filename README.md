@@ -214,7 +214,7 @@ mic ─► 16 kHz ─┬─► keyword spotter (3.3 M params, always on) ─► 
                ▼
           WebRTC VAD ─► Moonshine (only on speech) ─► command
      ─► instant phrase match ─► the brain: Needle 3, or your hosted model
-     ─► any of the 71 built-in functions, or one you wrote yourself
+     ─► any of the 80 built-in functions, or one you wrote yourself
      ─► the answer / a personality line ─► Piper or Kokoro neural voice
 
 scheduler ─► alarms · reminders · to-dos · calendar events
