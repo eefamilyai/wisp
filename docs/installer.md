@@ -1,6 +1,6 @@
-# How the NeedleVoice installer and uninstaller are built
+# How the Wisp installer and uninstaller are built
 
-Written after Windows Defender quarantined both `NeedleVoiceSetup.exe` and the
+Written after Windows Defender quarantined both `WispSetup.exe` and the
 `Uninstall.exe` it had written into the install folder, reporting
 `Trojan:Win32/Wacatac.B!ml` — a machine-learning heuristic, not a signature.
 
@@ -13,7 +13,7 @@ what the shape was, what replaced it, and what must not be reintroduced.
 `do_install` did this:
 
 ```rust
-let uninst = dir.join(nv_core::UNINSTALL_EXE);
+let uninst = dir.join(wisp_core::UNINSTALL_EXE);
 if let Ok(me) = std::env::current_exe() {
     if me != uninst {
         std::fs::copy(&me, &uninst)?;   // the installer copies itself in
@@ -28,15 +28,15 @@ let script = format!("ping 127.0.0.1 -n 3 > nul & rmdir /s /q \"{}\"", dir.displ
 Command::new("cmd").raw_arg(format!("/C {script}")).creation_flags(0x0800_0000).spawn();
 ```
 
-Together that meant every installed copy of NeedleVoice contained a file with all
+Together that meant every installed copy of Wisp contained a file with all
 of the following properties:
 
 1. **One executable, two identities.** `Uninstall.exe` was byte-for-byte the same
-   file as `NeedleVoiceSetup.exe`. The same bytes appeared as an installer and as
+   file as `WispSetup.exe`. The same bytes appeared as an installer and as
    an uninstaller.
 2. **A large unsigned executable carrying a compressed archive of other
    executables.** Setup was ~150 MB, nearly all of it a zstd-compressed tar of
-   `NeedleVoice.exe`, `NeedleVoiceConfig.exe` and four DLLs, expanded to disk at
+   `Wisp.exe`, `WispSettings.exe` and four DLLs, expanded to disk at
    run time. That is the textbook definition of a dropper: malware that installs
    other malware files from an embedded archive, without needing a network.
 3. **A shell spawned to delete the folder it lives in.** A `cmd.exe` running
@@ -58,7 +58,7 @@ common and unremarkable; all five in one artifact is the false positive.
 
 | | before | after |
 |---|---|---|
-| Uninstaller | a copy of the installer, as large as it | `crates/nv-uninstall`, its own program |
+| Uninstaller | a copy of the installer, as large as it | `crates/wisp-uninstall`, its own program |
 | Uninstaller size | ~150 MB (whole payload inside) | ~380 KB |
 | Payload in the uninstaller | yes, the entire install | none |
 | Self-deletion | `cmd.exe` + `rmdir /s /q` | rename aside, remove from a temporary copy |
@@ -69,18 +69,18 @@ common and unremarkable; all five in one artifact is the false positive.
 
 ### The uninstaller is a program of its own
 
-`crates/nv-uninstall` builds `NeedleVoiceUninstall.exe`, which the installer
+`crates/wisp-uninstall` builds `WispUninstall.exe`, which the installer
 carries inside its payload and writes out as `Uninstall.exe`. It contains no
 payload, creates no window, and writes no executable anywhere. `--uninstall`
 handed to Setup is relayed to the installed uninstaller rather than implemented
-there, which is why `nv-setup` has no uninstall code left to be copied.
+there, which is why `wisp-setup` has no uninstall code left to be copied.
 
 ### Nothing deletes itself
 
 The uninstaller cannot delete the file it is running from, and the old workaround
 — hand the job to `cmd.exe` — is the pattern that gets flagged. Instead:
 
-1. `Uninstall.exe` copies itself to `%TEMP%\NeedleVoice-uninstall-<pid>\`;
+1. `Uninstall.exe` copies itself to `%TEMP%\Wisp-uninstall-<pid>\`;
 2. launches that copy with `--parent <pid> --dir <install folder>` and exits;
 3. the copy waits for the original process to end, then deletes the install
    folder — which is not the folder it is running from, so nothing is in use;
@@ -95,11 +95,11 @@ reports that the rest will go on a second run. It does not silently half-succeed
 
 ### Stopping the running app
 
-`nv_core::win::close_processes_named` enumerates the windows of processes with
+`wisp_core::win::close_processes_named` enumerates the windows of processes with
 the target image name, posts `WM_CLOSE`, and waits. The agent's tray window
 handles `WM_CLOSE` by asking the listener to stop and posting a quit message, so
 the microphone and speakers are released properly. Only a copy that ignores the
-request is terminated. `crates/nv-agent/src/tray.rs` must keep those arms.
+request is terminated. `crates/wisp-agent/src/tray.rs` must keep those arms.
 
 ## Rules for changing this code
 
@@ -108,9 +108,9 @@ request is terminated. `crates/nv-agent/src/tray.rs` must keep those arms.
 * **Never give the uninstaller an embedded payload or a compressed archive.**
   Its job is directory removal; it should stay small.
 * **Never reach for `cmd.exe` to delete files.** Rename, or run from elsewhere.
-* **Keep the version metadata complete.** `nv_version::apply` fills it in for
+* **Keep the version metadata complete.** `wisp_version::apply` fills it in for
   every binary from one place; use it rather than setting fields by hand.
-* **Keep `nv-uninstall` free of new dependencies.** Each one is more code in an
+* **Keep `wisp-uninstall` free of new dependencies.** Each one is more code in an
   artifact that is judged by its shape.
 
 ## Signing
@@ -121,8 +121,8 @@ remedy, and that signing the outer executable while leaving the binaries inside
 it unsigned can make matters worse — so if a certificate is added, every
 executable and DLL in the payload is signed, not just Setup.
 
-`scripts/build-installer.ps1 -Sign` will sign them when `NV_SIGN_CERT` names a
-`.pfx` and `NV_SIGN_PASSWORD` its password. That is the point of the switch: it
+`scripts/build-installer.ps1 -Sign` will sign them when `WISP_SIGN_CERT` names a
+`.pfx` and `WISP_SIGN_PASSWORD` its password. That is the point of the switch: it
 makes "sign everything or sign nothing" the easy path.
 
 ## If Defender flags a build again

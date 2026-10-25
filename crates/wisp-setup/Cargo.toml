@@ -1,0 +1,21 @@
+[package]
+name = "wisp-setup"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "WispSetup"
+path = "src/main.rs"
+
+[dependencies]
+wisp-core = { path = "../wisp-core" }
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "glow"] }
+tar = "0.4"
+windows = { version = "0.62", features = ["Win32_UI_Shell", "Win32_Storage_FileSystem"] }
+zstd = "0.14"
+
+[build-dependencies]
+wisp-version = { path = "../wisp-version" }
+tar = "0.4"
+zstd = { version = "0.14", features = ["zstdmt"] }

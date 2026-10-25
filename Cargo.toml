@@ -1,16 +1,16 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/nv-core",
-    "crates/nv-agent",
-    "crates/nv-config",
-    "crates/nv-setup",
-    "crates/nv-uninstall",
-    "crates/nv-version",
+    "crates/wisp-core",
+    "crates/wisp-agent",
+    "crates/wisp-config",
+    "crates/wisp-setup",
+    "crates/wisp-uninstall",
+    "crates/wisp-version",
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 

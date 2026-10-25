@@ -1,0 +1,19 @@
+[package]
+name = "wisp-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "WispSettings"
+path = "src/main.rs"
+
+[dependencies]
+wisp-core = { path = "../wisp-core" }
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "glow"] }
+egui_extras = "0.36"
+cpal = "0.18"
+log = "0.4"
+
+[build-dependencies]
+wisp-version = { path = "../wisp-version" }

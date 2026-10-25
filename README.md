@@ -1,43 +1,135 @@
-# NeedleVoice
+# Wisp
 
-An offline Windows voice assistant in Rust. Say **"Hey Nova, open Chrome"** or
-**"Hey Nova, what is the Haber process?"**. A neon bubble pops up at the bottom
-of the screen, [Needle 3](https://github.com/cactus-compute/needle) works out
-what you want, and the assistant does it and answers out loud.
+An offline voice assistant for Windows that actually drives the computer. Say
+**"Hey Wisp, switch to Chrome"**, **"how much battery is left"**, or **"put the
+report in the recycle bin"** — a neon bubble pops up at the bottom of the screen,
+works out what you meant, and does it.
 
-Everything runs locally: no cloud, no API keys.
+Speech recognition, the wake word and — by default — the model that reads your
+command all run on this PC. No account, no cloud, no key. If you want a smarter
+assistant that can also answer questions, you can point it at a hosted model
+with your own API key; everything else stays exactly the same.
+
+> **Wisp is the new name for NeedleVoice (0.2 → 0.3).** The product used to be
+> named after the model inside it. It no longer is, because that model is now one
+> of two options. Your settings, functions and alarms are carried over from
+> `%APPDATA%\NeedleVoice` the first time the new version runs — see
+> [Upgrading](#upgrading-from-needlevoice).
 
 ## What it looks like
 
-The settings window has its own title bar, grouped navigation and a page for
-everything the assistant does. It follows Windows' light/dark setting, or you can
-pin it either way:
+The settings app is a dashboard first: whether it is listening, what it can do,
+and the machine it is listening on.
 
-| General | Functions |
+| Home | Computer access |
 | --- | --- |
-| ![General](docs/screenshots/settings-general.png) | ![Functions](docs/screenshots/settings-functions.png) |
+| ![Home](docs/screenshots/settings-home.png) | ![Computer access](docs/screenshots/settings-computer.png) |
 
-| Alarms & reminders | Light appearance |
+| Brain — whose it is | Functions |
 | --- | --- |
-| ![Alarms and reminders](docs/screenshots/settings-schedule.png) | ![Light](docs/screenshots/settings-light.png) |
+| ![Brain](docs/screenshots/settings-brain.png) | ![Functions](docs/screenshots/settings-functions.png) |
 
-### Speech recognition: Moonshine, or Whisper
+| Dark | Alarms & reminders |
+| --- | --- |
+| ![Dark](docs/screenshots/settings-dark.png) | ![Alarms](docs/screenshots/settings-schedule.png) |
 
-Two engines, chosen in Settings:
+`Ctrl+1` … `Ctrl+9` move between pages, `Ctrl+S` saves. It follows Windows'
+light/dark setting, or you can pin it either way.
+
+## What it can do
+
+Seventy-one functions, in ten groups. Anything with a phrase in it is understood
+**instantly** — no model, no waiting.
+
+### On the machine
+
+This is the half that makes it useful rather than decorative: it can see and
+drive the windows, files and settings a person would otherwise click.
+
+| Group | What it does | Say |
+|---|---|---|
+| **Windows** | Switch to a window, list what is open, minimise, maximise, snap to a side, move to another screen, Alt+Tab | *"switch to chrome"* · *"what windows are open"* · *"snap this to the left"* · *"move this to the other screen"* |
+| **Files & notes** | Open your Downloads/Documents/Desktop/Pictures, find a file by name, open it, put it in the recycle bin, measure a folder, keep notes and search them | *"open my downloads"* · *"find the file budget"* · *"delete the file old draft"* · *"how big is my downloads folder"* · *"take a note ring the plumber"* · *"what did I note about the plumber"* |
+| **Clipboard & typing** | Copy what you say (or the selection) to the clipboard, read it out, paste, type into the window in front | *"copy this to the clipboard"* · *"what's on my clipboard"* · *"paste it"* · *"type out hello there"* |
+| **System** | Battery, processor and memory load, which apps are using them, disk space, whether you are online and your address, this PC's specs, whether an app is running, screenshots (saved or copied) | *"how much battery is left"* · *"what's using my cpu"* · *"how much space is left"* · *"am I online"* · *"what are my specs"* · *"copy a screenshot"* |
+| **Power & screen** | Sleep, shut down, restart, sign out (all with a 30-second cancel window), turn the display off, brightness | *"put the computer to sleep"* · *"shut down the computer"* · *"cancel the shutdown"* · *"dim the screen"* |
+
+Deleting a file moves it to the **Recycle Bin**; nothing is ever erased outright.
+Shut down and restart wait 30 seconds and can be cancelled by voice. Each one is
+the same Win32 call a person would make with the mouse.
+[docs/computer.md](docs/computer.md) lists every function, what it touches and
+what it will not do.
+
+### Everything else
+
+| Group | Say |
+|---|---|
+| **Apps & web** | *"open chrome"* · *"close spotify"* · *"what is the haber process"* · *"go to reddit.com"* · *"play lofi on youtube"* |
+| **Music & sound** | *"pause the music"* · *"next song"* · *"set the volume to 30"* · *"mute"* |
+| **Answers** | *"what time is it"* · *"what's the date"* |
+| **Schedule** | *"set an alarm for 7:30 am"* · *"remind me to call mum at 4"* · *"add buy milk to my list"* · *"put the dentist on my calendar at 3 pm"* · *"what's on my schedule"* · *"mark buy milk as done"* |
+| **Assistant** | *"never mind"*, *"forget it"*, *"stand down"* — back out of a command without it being treated as one |
+
+### Your own functions
+
+Anything else is a **custom function**: a name, a description, parameters, an
+action (run a program, open a URL, press keys, run a PowerShell snippet or a
+Python script, or chain steps into a sequence), the phrases that trigger it and
+what to say back. Templates for the common ones (Spotify search, night light,
+focus mode, a morning routine, …) are one click away. A Python function prints
+its answer and that answer is spoken.
+
+### Alarms, reminders, to-dos and events
+
+Times are spoken the natural way — *"in 20 minutes"*, *"tomorrow at 9"*,
+*"every weekday at 8"*, *"every 30 minutes"* — and repeat daily, on weekdays,
+weekly or monthly. The list lives in `%APPDATA%\Wisp\schedule.json`, it is
+announced even while the microphone is paused, and anything missed while the
+machine was off is read out when the assistant starts. The whole list exports to
+an `.ics` file for Outlook, Google Calendar or a phone.
+
+## Two brains
+
+The command is a sentence with a function to find in it. What finds the function
+is the **brain**, and there are two to choose from in Settings → Brain.
+
+| | On this PC (default) | A hosted model |
+|---|---|---|
+| What runs | **Needle 3** — 121M parameters, 35 MB | OpenAI, Anthropic, Google Gemini, OpenRouter, or any OpenAI-compatible server (Ollama, LM Studio, vLLM) |
+| Cost | Free | Fractions of a cent per command |
+| Speed | Instant for anything with a phrase; a second or two otherwise | A second or two, more with a big model |
+| Private | Completely — nothing leaves the machine | Your command goes to the service you chose |
+| Can it answer a question? | No. It picks a function; a general question becomes a web search | Yes. It answers in a sentence, and still calls functions when asked |
+| Needs | Nothing | An API key, or a local model server |
+
+The key is stored with **DPAPI**, so it is encrypted with your Windows account
+and useless on any other machine or account. It is never logged, and the field in
+Settings shows only its last four characters. You can pick the model (including
+fetching the list your key can actually use) and how hard it should **think** —
+off, low, medium or high — which maps to each service's own reasoning control
+(`reasoning_effort`, a thinking budget, or Gemini's `thinkingBudget`).
+
+If the hosted model cannot be reached — a dropped connection, an expired key, a
+service having a bad day — the assistant falls back to Needle 3 rather than going
+quiet, and says so in the log. [docs/brain.md](docs/brain.md) has the setup
+detail.
+
+## Speech recognition
 
 | Engine | Per command | Notes |
 |---|---|---|
 | **Moonshine** (default) | **0.20 s** | English only. Built for short utterances, so it is 30× faster than Whisper here and, on the test clips, more accurate than every Whisper model below |
+| SenseVoice | 0.3 s | One model, non-autoregressive; reads Chinese, Japanese, Korean and Cantonese too |
 | Whisper `medium.en` | 6.0 s | Multilingual models available; the accurate fallback |
 
 Moonshine comes from `sherpa-onnx`, the same library the voices already use, so
-there is nothing new to install. The models are 270 MB and Settings fetches them
+there is nothing new to install. Its models are ~270 MB and Settings fetches them
 on demand; until they are there the assistant uses Whisper and says so in the log.
 
 ### What each Whisper model costs
 
 Measured on this machine (Ryzen 5 2600, 4 threads, a 3-second command) with
-`NeedleVoice.exe --bench-stt <model> <clip.wav>`, which is the same code path the
+`Wisp.exe --bench-stt <model> <clip.wav>`, which is the same code path the
 assistant uses:
 
 | Model | Size | Per command | Notes |
@@ -52,8 +144,8 @@ There is no small model that matches medium — that is the accuracy/size tradeo
 not a tuning problem. What does change the picture is the graphics card:
 
 ```
-cargo build --release -p nv-agent --features cuda     # needs the CUDA toolkit
-cargo build --release -p nv-agent --features vulkan    # needs the Vulkan SDK
+cargo build --release -p wisp-agent --features cuda     # needs the CUDA toolkit
+cargo build --release -p wisp-agent --features vulkan   # needs the Vulkan SDK
 ```
 
 Either one runs medium several times faster than this CPU does, which is the only
@@ -65,10 +157,10 @@ smaller model.
 
 | Executable | What it does |
 |---|---|
-| `NeedleVoiceSetup.exe` | Installer (per-user, no admin). Installing only — removing is the uninstaller's job. |
-| `NeedleVoice.exe` | Background agent: tray icon, wake word, bubble, voice. |
-| `NeedleVoiceConfig.exe` | Settings app. |
-| `NeedleVoiceUninstall.exe` | Uninstaller, written into the install folder as `Uninstall.exe`. Small, no payload. |
+| `WispSetup.exe` | Installer (per-user, no admin). Installing only — removing is the uninstaller's job. |
+| `Wisp.exe` | Background agent: tray icon, wake word, bubble, voice. |
+| `WispSettings.exe` | Settings app. |
+| `WispUninstall.exe` | Uninstaller, written into the install folder as `Uninstall.exe`. Small, no payload. |
 
 ### Pipeline
 
@@ -77,10 +169,10 @@ mic ─► 16 kHz ─┬─► keyword spotter (3.3 M params, always on) ─► 
                │                     │
                │      chime + bubble + listening, ~0.3 s after the name
                ▼
-          WebRTC VAD ─► Whisper tiny (only on speech) ─► command
-     ─► instant phrase match / Needle 3 tool call ─► any of the 30 built-in
-        functions, or one you wrote yourself
-     ─► personality line ─► Piper / Kokoro neural voice
+          WebRTC VAD ─► Moonshine (only on speech) ─► command
+     ─► instant phrase match ─► the brain: Needle 3, or your hosted model
+     ─► any of the 71 built-in functions, or one you wrote yourself
+     ─► the answer / a personality line ─► Piper or Kokoro neural voice
 
 scheduler ─► alarms · reminders · to-dos · calendar events
           ─► chime + bubble + spoken announcement, then run the function
@@ -89,55 +181,28 @@ scheduler ─► alarms · reminders · to-dos · calendar events
 
 * **Wake word**: a dedicated streaming keyword spotter (sherpa-onnx zipformer,
   3.3 M parameters, ~5 MB) listens continuously and fires the moment the name
-  ends — no transcription, no waiting for the sentence to finish. It costs
-  about 1.5 % of one core while silent. The name is turned into the model's
-  sub-word tokens in Rust, so any name works, and extra spellings ("no va",
-  "hey novah") can be added when an accent keeps being mis-heard. Without the
-  model the agent falls back to Whisper plus fuzzy matching ("Hey Nova",
-  "Hey, no va", "Heynova").
+  ends — no transcription, no waiting for the sentence to finish. It costs about
+  1.5 % of one core while silent. The name is turned into the model's sub-word
+  tokens in Rust, so any name works, and extra spellings ("no va", "hey novah")
+  can be added when an accent keeps being mis-heard. Without the model the agent
+  falls back to Whisper plus fuzzy matching.
 * **Functions**: every capability is one row in a catalogue that feeds three
-  things at once — the tool list handed to Needle, the exact phrases that skip
-  the model, and the settings app. Built-ins: open/close app, web search, open
-  website, YouTube, media pause/resume/next/previous/stop, volume set/up/down,
-  mute/unmute, time, date, lock, show desktop, screenshot, close window, and
-  Windows Settings. Anything else is a **custom function**: a name, a
-  description, parameters, an action (run a program, open a URL, press keys,
-  run a PowerShell script, or just say something), trigger phrases and a reply.
-  Templates for the common ones (shutdown, sleep, Spotify search, night light,
-  empty recycle bin, …) are one click away.
+  things at once — the tool list handed to the brain, the exact phrases that skip
+  the model, and the settings app. Adding a function means adding one row.
+* **The brain's prompt is rationed.** Needle reads a prompt at roughly 13 ms per
+  position on this class of CPU, so each function definition costs about half a
+  second. The full catalogue is several times what fits in its context, so a
+  command is scored against the catalogue and only the best seven definitions
+  travel with it; if that comes back empty, a wider list is tried once. The
+  hosted route has no such limit and gets every function.
 * **Changing your mind**: after the wake word you can back out — "never mind",
   "forget it", "cancel that", "turn off", "stand down", "stop listening",
-  "I changed my mind", "that's all". The assistant says one short word and goes
-  back to waiting, instead of treating it as a command. The words it shares with
-  real commands keep their meaning: "stop the music" still pauses, "cancel my
-  alarm" still cancels the alarm.
-* **Smarter functions**: besides the one-liners there are two ways to write
-  something real. A **Python script** (dropped in the scripts folder) gets your
-  parameters as arguments and as `NV_PARAM_*`, and whatever it prints last is
-  spoken back — so "ask python what the weather is" can answer. A **sequence**
-  chains steps without any code: say something, open a URL, press keys, run a
-  program, PowerShell or Python, wait, call another function, or add something
-  to the schedule — with `{output}` carrying what the previous step printed.
-* **Alarms, reminders, to-dos and events**: "set an alarm for 7:30 am",
-  "wake me up in 20 minutes", "remind me to take the pizza out at 6",
-  "add buy milk to my list", "put the dentist on my calendar at 3 pm",
-  "what's on my schedule", "read my list", "mark buy milk as done",
-  "cancel my alarm". Times are spoken the natural way ("tomorrow at 9", "every
-  weekday at 8", "every 30 minutes") and repeat daily, on weekdays, weekly or
-  monthly. The list is `%APPDATA%\NeedleVoice\schedule.json`, it is announced
-  even while the microphone is paused, and anything you missed while the
-  machine was off is read out when the agent starts.
-* **Brain**: Needle 3 (121M params, 35 MB) gets the command plus the enabled
-  functions and returns JSON calls. Obvious commands ("open X", "what is X",
-  "pause the music") skip the model and run instantly. Installed apps are not
-  put in the prompt; Needle names the app and a fuzzy matcher resolves it
-  against the scan.
-* **App discovery**: the Start menu's `AppsFolder` (desktop and Store apps) plus
-  shortcut folders. Rescanned at startup and every 30 minutes.
-* **Searches** open as a new tab in the chosen browser (`chrome.exe <url>`).
+  "that's all". The assistant says one short word and goes back to waiting. The
+  words it shares with real commands keep their meaning: "stop the music" still
+  pauses, "cancel my alarm" still cancels the alarm.
 * **Voice**: Piper (fast, natural, default) or Kokoro (most human-sounding,
-  optional 334 MB download), both via sherpa-onnx. The classic Windows voices
-  are a fallback.
+  optional 334 MB download), both via sherpa-onnx. The classic Windows voices are
+  a fallback.
 
 ### Resource use (measured on a Ryzen 5 2600)
 
@@ -145,7 +210,8 @@ scheduler ─► alarms · reminders · to-dos · calendar events
   Needle and the voice are only loaded while needed and are freed after 60 s of
   quiet.
 * Speech → text: ~0.2–0.4 s. Needle: instant for obvious commands, ~1.5–2.5 s
-  otherwise (lower the depth in Settings to speed it up).
+  otherwise (lower the depth in Settings to speed it up). A hosted model is
+  0.5–3 s depending on the model and the thinking level.
 * Piper voice: ~0.3 s to synthesise a short reply.
 
 ## Building
@@ -157,49 +223,65 @@ powershell -ExecutionPolicy Bypass -File scripts\build-installer.ps1
 ```
 
 This downloads the bundled models into `models\`, builds everything and writes
-`dist\NeedleVoiceSetup.exe`.
+`dist\WispSetup.exe`.
 
 Add `-Sign` to Authenticode-sign the installer and every binary it ships, given a
-certificate in `$env:NV_SIGN_CERT` and its password in `$env:NV_SIGN_PASSWORD`.
+certificate in `$env:WISP_SIGN_CERT` and its password in `$env:WISP_SIGN_PASSWORD`.
 Signing is worth doing — Defender's machine-learning heuristic once quarantined
-this installer as `Trojan:Win32/Wacatac.B!ml`. That was a false positive caused
-by the build's shape, and `docs\installer.md` records what it was and the rules
-that keep it fixed.
+this installer as `Trojan:Win32/WacatacB!ml`. That was a false positive caused by
+the build's shape, and `docs\installer.md` records what it was and the rules that
+keep it fixed.
 
 `.cargo\config.toml` matters: it forces `/O2` and AVX2 for whisper.cpp. Without
 it, MSVC builds whisper.cpp unoptimised and it runs about 30× slower.
 
 ### Handy flags
 
-* `NeedleVoice.exe --demo`: plays through every bubble state.
-* `NeedleVoice.exe --say "text" [--config file.toml]`: speak once (used by voice preview).
-* `NeedleVoice.exe --chime`: play the wake-up chime once (used by the settings app).
-* `NeedleVoiceConfig.exe --tab voice|listening|schedule|brain|browser|apps|functions|test`
-* `NeedleVoiceConfig.exe --config other.toml`: edit a different settings file
-  (handy for trying a set of functions without touching the live ones).
-* `NV_FAKE_MIC=<16 kHz mono wav>` plays a file into the agent in real time,
+* `Wisp.exe --demo`: plays through every bubble state.
+* `Wisp.exe --say "text" [--config file.toml]`: speak once (used by voice preview).
+* `Wisp.exe --chime`: play the wake-up chime once (used by the settings app).
+* `Wisp.exe --bench-needle "<command>" [depth]`: where a command's milliseconds go.
+* `Wisp.exe --bench-stt <model> <clip.wav>`: time a recogniser on a real clip.
+* `WispSettings.exe --tab home|computer|voice|listening|schedule|brain|browser|apps|functions|test`
+* `WispSettings.exe --config other.toml`: edit a different settings file (handy for
+  trying a set of functions without touching the live ones).
+* `WISP_FAKE_MIC=<16 kHz mono wav>` plays a file into the agent in real time,
   which is how the wake word is tested without a microphone.
-* `NeedleVoiceSetup.exe --silent [--dir X] [--no-launch] [--no-autostart]`
+* `WispSetup.exe --silent [--dir X] [--no-launch] [--no-autostart]`
 * `Uninstall.exe --uninstall [--dir X] [--delete-settings]` — both `--` and `/`
   forms are accepted, because that is how launchers rewrite it.
 
-Settings are stored in `%APPDATA%\NeedleVoice\config.toml`, and the log is
-`agent.log` in the same folder. The agent restarts itself when settings change.
+Settings are stored in `%APPDATA%\Wisp\config.toml`, and the log is `agent.log`
+in the same folder. The agent restarts itself when settings change.
+
+## Upgrading from NeedleVoice
+
+The rename only touches the product's own name: settings, the schedule file,
+your custom functions, the scripts folder and a notes file are copied from
+`%APPDATA%\NeedleVoice` to `%APPDATA%\Wisp` the first time the new build starts,
+and the old folder is left alone (nothing is moved or deleted). The copy happens
+only when the new folder has no `config.toml` of its own, so it never overwrites
+anything.
+
+The install itself is new — `%LOCALAPPDATA%\Programs\Wisp` rather than
+`…\NeedleVoice` — so run `WispSetup.exe`, then remove the old copy from Windows'
+"Installed apps".
 
 ## Layout
 
 ```
-crates/nv-core    config, app discovery, function catalogue (built-ins +
-                  custom, Python + step sequences), Needle brain, action runner,
-                  schedule store + spoken-time parser, wake parsing, wake-model
-                  downloader, personality lines, voice catalogue + downloader
-crates/nv-agent   audio, VAD, Whisper, keyword spotter, listener state
-                  machine, alarm scheduler, bubble overlay, tray, neural TTS
-                  playback
-crates/nv-config  settings UI (egui)
-crates/nv-setup   installer with embedded zstd payload — installs only
-crates/nv-uninstall  uninstaller, a separate small program (see docs/installer.md)
-crates/nv-version shared Windows version resources, icon and manifest
+crates/wisp-core      config, app discovery, the function catalogue (built-ins +
+                      custom, Python + step sequences), the two brains (Needle and
+                      the hosted client), the machine itself (windows, clipboard,
+                      files, power), action runner, schedule store + spoken-time
+                      parser, wake parsing, model downloaders, personality lines
+crates/wisp-agent     audio, VAD, Moonshine/Whisper, keyword spotter, listener
+                      state machine, alarm scheduler, bubble overlay, tray,
+                      neural TTS playback
+crates/wisp-config    settings UI (egui)
+crates/wisp-setup     installer with embedded zstd payload — installs only
+crates/wisp-uninstall uninstaller, a separate small program (see docs/installer.md)
+crates/wisp-version   shared Windows version resources, icon and manifest
 ```
 
 ## Licence
@@ -210,14 +292,13 @@ NOTICE that Apache-2.0 components (Needle 3, sherpa-onnx) ask for.
 
 ## Credits
 
-The interesting parts of this project belong to other people. The tool calling
-is **Needle 3** by [Cactus Compute, Inc.](https://huggingface.co/Cactus-Compute/needle3)
-(Apache-2.0), running on the
-[needle-rs](https://github.com/geekgineer/needle-rs) engine; the speech is
-**whisper.cpp** and **sherpa-onnx**, with the wake-word model, Piper voices and
-**Kokoro** voices from the k2-fsa and rhasspy projects. See
-[CREDITS.md](CREDITS.md) for the full list, the licences, and the citation the
-Needle authors ask for:
+The interesting parts of this project belong to other people. The default
+on-device brain is **Needle 3** by [Cactus Compute, Inc.](https://huggingface.co/Cactus-Compute/needle3)
+(Apache-2.0), running on the [needle-rs](https://github.com/geekgineer/needle-rs)
+engine; the speech is **whisper.cpp** and **sherpa-onnx**, with the wake-word
+model, Piper voices and **Kokoro** voices from the k2-fsa and rhasspy projects.
+See [CREDITS.md](CREDITS.md) for the full list, the licences, and the citation
+the Needle authors ask for:
 
 ```bibtex
 @misc{needle3_2026,
@@ -232,13 +313,13 @@ Needle authors ask for:
 
 ## Building from a clone
 
-Models are not in the repository — they are a few hundred megabytes and each
-one belongs to its publisher. Fetch them, then build:
+Models are not in the repository — they are a few hundred megabytes and each one
+belongs to its publisher. Fetch them, then build:
 
 ```powershell
-./scripts/fetch-models.ps1        # Needle + Whisper + the wake-word pack + a voice
+./scripts/fetch-models.ps1        # Needle + the wake-word pack + a voice + Moonshine
 cargo build --release
-./scripts/build-installer.ps1     # optional: dist\NeedleVoiceSetup.exe
+./scripts/build-installer.ps1     # optional: dist\WispSetup.exe
 ```
 
 The tests that need a model skip themselves when it isn't there.

@@ -1833,77 +1833,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nv-agent"
-version = "0.2.0"
-dependencies = [
- "cpal",
- "log",
- "nv-core",
- "nv-version",
- "sherpa-onnx",
- "tiny-skia",
- "webrtc-vad",
- "whisper-rs",
- "windows",
-]
-
-[[package]]
-name = "nv-config"
-version = "0.2.0"
-dependencies = [
- "cpal",
- "eframe",
- "egui_extras",
- "log",
- "nv-core",
- "nv-version",
-]
-
-[[package]]
-name = "nv-core"
-version = "0.2.0"
-dependencies = [
- "bzip2 0.6.1",
- "log",
- "needle-infer",
- "png",
- "serde",
- "serde_json",
- "strsim",
- "tar",
- "toml",
- "ureq 3.4.2",
- "windows",
-]
-
-[[package]]
-name = "nv-setup"
-version = "0.2.0"
-dependencies = [
- "eframe",
- "nv-core",
- "nv-version",
- "tar",
- "windows",
- "zstd 0.14.0",
-]
-
-[[package]]
-name = "nv-uninstall"
-version = "0.2.0"
-dependencies = [
- "nv-core",
- "nv-version",
-]
-
-[[package]]
-name = "nv-version"
-version = "0.2.0"
-dependencies = [
- "winresource",
-]
-
-[[package]]
 name = "objc-sys"
 version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3898,6 +3827,77 @@ checksum = "0986a8b1d586b7d3e4fe3d9ea39fb451ae22869dcea4aa109d287a374d866087"
 dependencies = [
  "toml",
  "version_check",
+]
+
+[[package]]
+name = "wisp-agent"
+version = "0.3.0"
+dependencies = [
+ "cpal",
+ "log",
+ "sherpa-onnx",
+ "tiny-skia",
+ "webrtc-vad",
+ "whisper-rs",
+ "windows",
+ "wisp-core",
+ "wisp-version",
+]
+
+[[package]]
+name = "wisp-config"
+version = "0.3.0"
+dependencies = [
+ "cpal",
+ "eframe",
+ "egui_extras",
+ "log",
+ "wisp-core",
+ "wisp-version",
+]
+
+[[package]]
+name = "wisp-core"
+version = "0.3.0"
+dependencies = [
+ "bzip2 0.6.1",
+ "log",
+ "needle-infer",
+ "png",
+ "serde",
+ "serde_json",
+ "strsim",
+ "tar",
+ "toml",
+ "ureq 3.4.2",
+ "windows",
+]
+
+[[package]]
+name = "wisp-setup"
+version = "0.3.0"
+dependencies = [
+ "eframe",
+ "tar",
+ "windows",
+ "wisp-core",
+ "wisp-version",
+ "zstd 0.14.0",
+]
+
+[[package]]
+name = "wisp-uninstall"
+version = "0.3.0"
+dependencies = [
+ "wisp-core",
+ "wisp-version",
+]
+
+[[package]]
+name = "wisp-version"
+version = "0.3.0"
+dependencies = [
+ "winresource",
 ]
 
 [[package]]

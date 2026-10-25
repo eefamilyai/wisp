@@ -1,7 +1,7 @@
-# Authenticode-sign the NeedleVoice binaries.
+# Authenticode-sign the Wisp binaries.
 #
-#   $env:NV_SIGN_CERT     = "C:\path\to\certificate.pfx"
-#   $env:NV_SIGN_PASSWORD = "…"
+#   $env:WISP_SIGN_CERT     = "C:\path\to\certificate.pfx"
+#   $env:WISP_SIGN_PASSWORD = "…"
 #   powershell -File scripts\sign.ps1 -Files a.exe,b.dll
 #
 # Why this exists: the installer and its uninstaller were flagged by Defender's
@@ -15,11 +15,11 @@ param(
 )
 $ErrorActionPreference = "Stop"
 
-$cert = $env:NV_SIGN_CERT
-$password = $env:NV_SIGN_PASSWORD
-if (-not $cert) { throw "NV_SIGN_CERT is not set (path to a .pfx, or a subject name for a store certificate)" }
+$cert = $env:WISP_SIGN_CERT
+$password = $env:WISP_SIGN_PASSWORD
+if (-not $cert) { throw "WISP_SIGN_CERT is not set (path to a .pfx, or a subject name for a store certificate)" }
 if (-not (Test-Path $cert) -and -not $cert.Contains("=")) {
-    throw "NV_SIGN_CERT does not exist: $cert"
+    throw "WISP_SIGN_CERT does not exist: $cert"
 }
 
 # signtool ships with the Windows SDK; find the newest one available.
@@ -41,7 +41,7 @@ foreach ($f in $Files) {
         /p $password `
         /tr http://timestamp.digicert.com `
         /td sha256 `
-        /d "NeedleVoice" `
+        /d "Wisp" `
         $f
     if ($LASTEXITCODE) { throw "signing failed for $f" }
 }

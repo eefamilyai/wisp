@@ -5,7 +5,7 @@
 #
 #   powershell -ExecutionPolicy Bypass -File scripts\install-local.ps1
 param(
-    [string]$InstallDir = "$env:LOCALAPPDATA\Programs\NeedleVoice",
+    [string]$InstallDir = "$env:LOCALAPPDATA\Programs\Wisp",
     [switch]$NoRestart
 )
 
@@ -13,27 +13,27 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 $release = Join-Path $root "target\release"
 
-if (-not (Test-Path (Join-Path $InstallDir "NeedleVoice.exe"))) {
+if (-not (Test-Path (Join-Path $InstallDir "Wisp.exe"))) {
     throw "No installed copy at $InstallDir — run the installer first."
 }
-foreach ($exe in @("NeedleVoice.exe", "NeedleVoiceConfig.exe")) {
+foreach ($exe in @("Wisp.exe", "WispSettings.exe")) {
     if (-not (Test-Path (Join-Path $release $exe))) {
         throw "$exe is not built yet — run: cargo build --release"
     }
 }
 
 # The assistant holds its own executable open while running.
-Get-Process NeedleVoice, NeedleVoiceConfig -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process Wisp, WispSettings -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 2
 
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $backup = Join-Path $root "target\installed-backup\$stamp"
 New-Item -ItemType Directory -Force -Path $backup | Out-Null
-foreach ($exe in @("NeedleVoice.exe", "NeedleVoiceConfig.exe")) {
+foreach ($exe in @("Wisp.exe", "WispSettings.exe")) {
     Copy-Item (Join-Path $InstallDir $exe) (Join-Path $backup $exe) -Force
 }
 
-foreach ($exe in @("NeedleVoice.exe", "NeedleVoiceConfig.exe")) {
+foreach ($exe in @("Wisp.exe", "WispSettings.exe")) {
     Copy-Item (Join-Path $release $exe) (Join-Path $InstallDir $exe) -Force
     Write-Host "installed $exe"
 }
@@ -66,7 +66,7 @@ if (Test-Path $streamSrc) {
     Write-Host "installed the streaming model (live transcript)"
 }
 
-$cfgFile = Join-Path $env:APPDATA "NeedleVoice\config.toml"
+$cfgFile = Join-Path $env:APPDATA "Wisp\config.toml"
 
 # The model behind the wake word and the command brain: without needle3.cact the
 # agent answers every command with a web search, which is what "it doesn't
@@ -111,9 +111,9 @@ if (Test-Path $cfgFile) {
 }
 
 if (-not $NoRestart) {
-    Start-Process -FilePath (Join-Path $InstallDir "NeedleVoice.exe") -ArgumentList "--background" -WorkingDirectory $InstallDir
+    Start-Process -FilePath (Join-Path $InstallDir "Wisp.exe") -ArgumentList "--background" -WorkingDirectory $InstallDir
     Start-Sleep -Seconds 6
-    $log = Join-Path $env:APPDATA "NeedleVoice\agent.log"
+    $log = Join-Path $env:APPDATA "Wisp\agent.log"
     if (Test-Path $log) {
         Write-Host "--- last lines of the log"
         Get-Content $log -Tail 6 | Where-Object { $_ -notmatch "^whisper_|wake keywords|▁" }
@@ -121,7 +121,7 @@ if (-not $NoRestart) {
 }
 
 # Confirm the installed build is the one that was just built.
-$fresh = (Get-FileHash (Join-Path $release "NeedleVoice.exe") -Algorithm SHA256).Hash
-$placed = (Get-FileHash (Join-Path $InstallDir "NeedleVoice.exe") -Algorithm SHA256).Hash
+$fresh = (Get-FileHash (Join-Path $release "Wisp.exe") -Algorithm SHA256).Hash
+$placed = (Get-FileHash (Join-Path $InstallDir "Wisp.exe") -Algorithm SHA256).Hash
 if ($fresh -ne $placed) { throw "The installed copy does not match the build." }
 Write-Host "installed build matches target\release ($($fresh.Substring(0,12))…)"
