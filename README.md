@@ -29,9 +29,9 @@ and the machine it is listening on.
 | --- | --- |
 | ![Brain](docs/screenshots/settings-brain.png) | ![Functions](docs/screenshots/settings-functions.png) |
 
-| Dark | Alarms & reminders |
+| Dark | Queued for later |
 | --- | --- |
-| ![Dark](docs/screenshots/settings-dark.png) | ![Alarms](docs/screenshots/settings-schedule.png) |
+| ![Dark](docs/screenshots/settings-dark.png) | ![Queued](docs/screenshots/settings-queue.png) |
 
 `Ctrl+1` … `Ctrl+9` move between pages, `Ctrl+S` saves. It follows Windows'
 light/dark setting, or you can pin it either way.
