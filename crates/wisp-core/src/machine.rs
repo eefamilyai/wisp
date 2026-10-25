@@ -73,10 +73,20 @@ pub enum Op {
     BrightnessUp,
     BrightnessDown,
     CopyScreenshot,
+    // ── Questions the machine can answer itself ────────────────────────
+    NextUp,
+    TimeUntil,
+    WhoAmI,
+    CountFiles,
+    WhereFolder,
+    WhySlow,
+    Capabilities,
+    ListPending,
+    CancelPending,
 }
 
 impl Op {
-    pub const ALL: [Op; 40] = [
+    pub const ALL: [Op; 49] = [
         Op::FocusWindow,
         Op::ActiveWindow,
         Op::ListWindows,
@@ -117,6 +127,15 @@ impl Op {
         Op::BrightnessUp,
         Op::BrightnessDown,
         Op::CopyScreenshot,
+        Op::NextUp,
+        Op::TimeUntil,
+        Op::WhoAmI,
+        Op::CountFiles,
+        Op::WhereFolder,
+        Op::WhySlow,
+        Op::Capabilities,
+        Op::ListPending,
+        Op::CancelPending,
     ];
 
     /// The catalogue name, which is also what the brain calls.
@@ -162,6 +181,15 @@ impl Op {
             Op::BrightnessUp => "brightness_up",
             Op::BrightnessDown => "brightness_down",
             Op::CopyScreenshot => "copy_screenshot",
+            Op::NextUp => "next_up",
+            Op::TimeUntil => "time_until",
+            Op::WhoAmI => "who_am_i",
+            Op::CountFiles => "count_files",
+            Op::WhereFolder => "where_folder",
+            Op::WhySlow => "why_slow",
+            Op::Capabilities => "capabilities",
+            Op::ListPending => "list_pending",
+            Op::CancelPending => "cancel_pending",
         }
     }
 
@@ -253,13 +281,39 @@ pub fn run(op: Op, args: &[(String, String)], cfg: &crate::Config, apps: &AppInd
         Op::RestartPc => win::power_off("restart", 30)
             .map(|_| "restarting in 30 seconds — say \"cancel the shutdown\" to stop it".to_string()),
         Op::SignOut => win::power_off("signout", 0).map(|_| "signing you out".to_string()),
-        Op::CancelShutdown => win::power_off("cancel", 0).map(|_| "cancelled the shutdown".to_string()),
+        Op::CancelShutdown => {
+            // A queued shutdown has not been issued to Windows yet, so there is
+            // nothing for `shutdown /a` to cancel: take it out of the queue.
+            let mut pendings = crate::pending::Pendings::open();
+            let queued = pendings.cancel("shutdown");
+            let mut restarted = pendings.cancel("restart");
+            let mut gone = queued;
+            gone.append(&mut restarted);
+            if !gone.is_empty() {
+                pendings.save().map_err(|e| e.to_string())?;
+                return Ok(format!(
+                    "cancelled the queued {}",
+                    if gone.len() == 1 { "shutdown".to_string() } else { format!("{} shutdowns", gone.len()) }
+                ));
+            }
+            win::power_off("cancel", 0).map(|_| "cancelled the shutdown".to_string())
+        }
         Op::TurnOffScreen => win::monitor_off().map(|_| "screen off — any key brings it back".to_string()),
         Op::BrightnessSet => brightness_set(arg(args, "percent")),
         Op::BrightnessUp => brightness_nudge(true),
         Op::BrightnessDown => brightness_nudge(false),
         Op::CopyScreenshot => win::copy_screenshot_to_clipboard()
             .map(|(w, h)| format!("copied the screen ({w}×{h}) to the clipboard")),
+        // ── Questions the machine can answer itself ────────────────────
+        Op::NextUp => next_up(),
+        Op::TimeUntil => time_until(arg(args, "when")),
+        Op::WhoAmI => who_am_i(),
+        Op::CountFiles => count_files(arg(args, "folder")),
+        Op::WhereFolder => where_folder(arg(args, "folder")),
+        Op::WhySlow => why_slow(),
+        Op::Capabilities => capabilities(cfg),
+        Op::ListPending => list_pending(),
+        Op::CancelPending => cancel_pending(arg(args, "what")),
     }
 }
 
@@ -582,8 +636,16 @@ fn folder_size(want: &str) -> Result<String, String> {
 /// Total size of a folder tree, bounded so a chosen drive does not freeze the
 /// assistant: 200 000 entries is far more than any personal folder.
 fn directory_size(root: &Path) -> (u64, u64) {
+    let (bytes, files, _) = directory_tally(root);
+    (bytes, files)
+}
+
+/// The same walk, also counting the folders — "how many files" and "where are
+/// my downloads" both want a different slice of it.
+fn directory_tally(root: &Path) -> (u64, u64, u64) {
     let mut bytes = 0u64;
     let mut files = 0u64;
+    let mut folders = 0u64;
     let mut seen = 0usize;
     let mut queue = vec![root.to_path_buf()];
     while let Some(dir) = queue.pop() {
@@ -591,10 +653,11 @@ fn directory_size(root: &Path) -> (u64, u64) {
         for entry in entries.flatten() {
             seen += 1;
             if seen > 200_000 {
-                return (bytes, files);
+                return (bytes, files, folders);
             }
             let Ok(meta) = entry.metadata() else { continue };
             if meta.is_dir() {
+                folders += 1;
                 queue.push(entry.path());
             } else {
                 bytes += meta.len();
@@ -602,7 +665,7 @@ fn directory_size(root: &Path) -> (u64, u64) {
             }
         }
     }
-    (bytes, files)
+    (bytes, files, folders)
 }
 
 fn human_bytes(bytes: u64) -> String {
@@ -874,6 +937,12 @@ fn local_ip() -> Option<std::net::IpAddr> {
     socket.local_addr().ok().map(|a| a.ip())
 }
 
+/// Is there a route out of this machine? Used by the trigger layer, which asks
+/// far more often than a person does, so it is kept in one place.
+pub fn online_now() -> bool {
+    online()
+}
+
 fn online() -> bool {
     use std::net::ToSocketAddrs;
     let Ok(mut addrs) = "1.1.1.1:53".to_socket_addrs() else { return false };
@@ -1029,6 +1098,319 @@ fn brightness_nudge(up: bool) -> Result<String, String> {
     Ok(format!("brightness at {now}%"))
 }
 
+// ── Questions the machine can answer itself ──────────────────────────────
+//
+// The five Ws and the H, answered without a model wherever the answer is a fact
+// about this computer: it is quicker, it works offline, and it is always right.
+
+/// "what's next" — the soonest thing on the schedule, then anything queued.
+fn next_up() -> Result<String, String> {
+    let now = crate::schedule::Stamp::now();
+    let schedule = crate::schedule::Schedule::open();
+    let mut said: Vec<String> = Vec::new();
+    let mut soonest: Option<(i64, String)> = None;
+
+    if let Some((at, item)) = schedule.next_up(now) {
+        let minutes = now.minutes_until(at).max(0);
+        said.push(format!("{} at {} (in {})", item.kind.label().to_lowercase(), at.speak_time(), spoken_duration(Duration::from_secs(minutes as u64 * 60))));
+        soonest = Some((minutes, said[0].clone()));
+    }
+
+    let pendings = crate::pending::Pendings::open();
+    let mut queued: Vec<(i64, String)> = pendings
+        .items
+        .iter()
+        .filter_map(|p| match p.trigger {
+            crate::when::Trigger::At { stamp } => Some((now.minutes_until(stamp).max(0), p.sentence())),
+            _ => None,
+        })
+        .collect();
+    queued.sort_by_key(|(minutes, _)| *minutes);
+    for (minutes, sentence) in queued.iter().take(2) {
+        said.push(format!("{sentence} (in {})", spoken_duration(Duration::from_secs(*minutes as u64 * 60))));
+        if soonest.as_ref().is_none_or(|(best, _)| *minutes < *best) {
+            soonest = Some((*minutes, sentence.clone()));
+        }
+    }
+    // Conditions have no time, but they are still things waiting to happen.
+    let conditions: Vec<String> = pendings
+        .items
+        .iter()
+        .filter(|p| !p.trigger.is_moment())
+        .map(|p| p.sentence())
+        .collect();
+    for condition in conditions.iter().take(2) {
+        said.push(condition.clone());
+    }
+
+    if said.is_empty() {
+        return Ok("nothing is scheduled and nothing is queued".into());
+    }
+    if said.len() == 1 {
+        return Ok(format!("next up: {}", said[0]));
+    }
+    Ok(format!("{} things coming up: {}", said.len(), said.join(", then ")))
+}
+
+/// "how long until 9pm" — and "how long until my alarm", which is the schedule.
+fn time_until(when: &str) -> Result<String, String> {
+    let when = when.trim();
+    if when.is_empty() {
+        return Err("until when?".into());
+    }
+    let now = crate::schedule::Stamp::now();
+    // "my alarm", "my next reminder": the next scheduled thing, not a clock time.
+    if ["alarm", "reminder", "event", "appointment", "meeting", "timer"].iter().any(|w| when.contains(w)) {
+        let schedule = crate::schedule::Schedule::open();
+        let (at, item) = schedule.next_up(now).ok_or("there's nothing scheduled")?;
+        let minutes = now.minutes_until(at).max(0);
+        return Ok(format!(
+            "{} is at {}, which is in {}",
+            item.kind.label().to_lowercase(),
+            at.speak_time(),
+            spoken_duration(Duration::from_secs(minutes as u64 * 60))
+        ));
+    }
+    let (at, _) = crate::schedule_parse::parse(when, now).map_err(|_| format!("I couldn't read \"{when}\" as a time"))?;
+    let minutes = now.minutes_until(at);
+    if minutes <= 0 {
+        return Ok(format!("{} is now", at.speak_time()));
+    }
+    let day = at.speak_date(now);
+    let suffix = if day == "today" { String::new() } else { format!(" ({day})") };
+    Ok(format!("{} is in {}{suffix}", at.speak_time(), spoken_duration(Duration::from_secs(minutes as u64 * 60))))
+}
+
+/// "who am i" — the account and the machine it is signed in to.
+fn who_am_i() -> Result<String, String> {
+    let user = win::user_name();
+    let machine = win::computer_name();
+    let os = win::windows_version();
+    let mut said = String::new();
+    if !user.is_empty() {
+        said.push_str(&format!("you're signed in as {user}"));
+    }
+    if !machine.is_empty() {
+        said.push_str(if said.is_empty() { "" } else { ", " });
+        said.push_str(&format!("on {machine}"));
+    }
+    if !os.is_empty() {
+        said.push_str(&format!(", running {os}"));
+    }
+    if said.is_empty() {
+        return Err("I can't read who is signed in".into());
+    }
+    Ok(said)
+}
+
+fn count_files(want: &str) -> Result<String, String> {
+    let want = if want.trim().is_empty() { "downloads" } else { want };
+    let (label, path) = resolve_folder(want).ok_or_else(|| format!("I couldn't find a folder called \"{}\"", want.trim()))?;
+    let (bytes, files, folders) = directory_tally(&path);
+    Ok(format!(
+        "{label} has {} files in {folders} folders, {} in total",
+        thousands(files),
+        human_bytes(bytes)
+    ))
+}
+
+fn where_folder(want: &str) -> Result<String, String> {
+    let want = if want.trim().is_empty() { "downloads" } else { want };
+    let (label, path) = resolve_folder(want).ok_or_else(|| format!("I couldn't find a folder called \"{}\"", want.trim()))?;
+    let (bytes, files, _) = directory_tally(&path);
+    Ok(format!("{label} is {}, holding {} files ({})", path.display(), thousands(files), human_bytes(bytes)))
+}
+
+/// "why is my computer slow" — the useful answer, not a list of numbers.
+///
+/// One or two concrete culprits with the numbers behind them, chosen by what is
+/// actually stretched: the processor, the memory, a single greedy app, or a
+/// drive with nothing left on it.
+fn why_slow() -> Result<String, String> {
+    let cpu = win::cpu_usage(Duration::from_millis(300)).unwrap_or(0.0);
+    let memory = win::memory();
+    let busiest = win::top_apps(true, 1).into_iter().next();
+    let hungriest = win::top_apps(false, 1).into_iter().next();
+    let mut reasons: Vec<String> = Vec::new();
+    // The one app worth naming, if a single app is the problem.
+    let mut culprit: Option<String> = None;
+
+    if cpu >= 65.0 {
+        reasons.push(format!("the processor is {cpu:.0} percent busy"));
+    }
+    if let Some((total, available)) = memory {
+        let used = total.saturating_sub(available);
+        let percent = if total > 0 { used as f32 / total as f32 * 100.0 } else { 0.0 };
+        if percent >= 85.0 {
+            reasons.push(format!(
+                "memory is {percent:.0} percent full ({:.1} of {:.1} GB)",
+                gigabytes(used),
+                gigabytes(total)
+            ));
+        }
+    }
+    if let Some(app) = &busiest {
+        if app.cpu_percent >= 25.0 {
+            reasons.push(format!("{} alone is using {:.0} percent of the processor", app.name, app.cpu_percent));
+            culprit = Some(app.name.clone());
+        }
+    }
+    if culprit.is_none() {
+        if let Some(app) = &hungriest {
+            if app.megabytes >= 2000 {
+                reasons.push(format!("{} is holding {} MB of memory", app.name, thousands(app.megabytes)));
+                culprit = Some(app.name.clone());
+            }
+        }
+    }
+    if let Some(drive) = win::drives().first() {
+        let free_fraction = if drive.total > 0 { drive.free as f32 / drive.total as f32 } else { 1.0 };
+        if free_fraction < 0.05 {
+            reasons.push(format!(
+                "{} is down to {} free, which Windows needs for itself",
+                drive.name,
+                human_bytes(drive.free)
+            ));
+        }
+    }
+
+    if reasons.is_empty() {
+        let detail = match (busiest.as_ref(), memory) {
+            (Some(app), Some((total, available))) => format!(
+                "processor at {cpu:.0} percent, memory {:.1} of {:.1} GB in use, and the busiest app is {}",
+                gigabytes(total.saturating_sub(available)),
+                gigabytes(total),
+                app.name
+            ),
+            _ => format!("processor at {cpu:.0} percent"),
+        };
+        return Ok(format!(
+            "nothing is stretched right now — {detail}. If it still feels slow, something is probably waiting on the network."
+        ));
+    }
+
+    // Two reasons at most: a third is a list, and a list is not an answer.
+    reasons.truncate(2);
+    let lead = if reasons.len() == 1 { "one thing stands out:" } else { "two things:" };
+    let about_memory = reasons.iter().any(|r| r.contains("memory"));
+    let advice = match culprit {
+        Some(app) => format!("Closing {app} should give you the most back."),
+        None if about_memory => "Closing something you are not using should give you the most back.".to_string(),
+        None => "Freeing some disk space would help most.".to_string(),
+    };
+    Ok(format!("{lead} {}. {advice}", reasons.join(", and ")))
+}
+
+/// "what can you do" — the groups that are switched on, in plain words.
+fn capabilities(cfg: &crate::Config) -> Result<String, String> {
+    // Five clauses is about as long as a person listens to before losing the
+    // thread; everything else is in Settings, under Functions.
+    const MOST: usize = 5;
+    let mut said: Vec<&str> = Vec::new();
+    for group in crate::tools::GROUPS {
+        let enabled = crate::tools::BUILTINS
+            .iter()
+            .any(|b| b.group == group && !cfg.disabled_tools.iter().any(|d| d == b.name));
+        if let (true, Some(blurb)) = (enabled, group_blurb(group)) {
+            said.push(blurb);
+        }
+    }
+    if said.is_empty() {
+        return Ok("everything is switched off at the moment — turn something on in Settings, under Functions".into());
+    }
+    let more = said.len().saturating_sub(MOST);
+    said.truncate(MOST);
+    let own = cfg.custom_tools.iter().filter(|c| c.enabled).count();
+    let mut out = format!("I can {}", join_words(&said));
+    if more > 0 {
+        out.push_str(&format!(", and {more} other kinds of thing"));
+    }
+    if own > 0 {
+        out.push_str(&format!(
+            ", plus the {} function{} you added",
+            spelled(own),
+            if own == 1 { "" } else { "s" }
+        ));
+    }
+    out.push_str(
+        ". Anything I can do now, I can do later — \"shut down in 30 minutes\", \"lock the pc at 11pm\", \
+         or \"close chrome when spotify closes\".",
+    );
+    Ok(out)
+}
+
+/// Small numbers read better as words when they are spoken.
+fn spelled(n: usize) -> String {
+    const WORDS: [&str; 10] = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"];
+    WORDS.get(n).map(|w| w.to_string()).unwrap_or_else(|| n.to_string())
+}
+
+/// Plain words for each group of the catalogue.
+fn group_blurb(group: &str) -> Option<&'static str> {
+    Some(match group {
+        "Apps & web" => "open apps and search the web",
+        "Windows" => "arrange and switch windows",
+        "Files & notes" => "find files and keep notes",
+        "Clipboard & typing" => "read the clipboard and type for you",
+        "Music & sound" => "control music and the volume",
+        "System" => "report the battery, memory, disk and network",
+        "Power & screen" => "sleep or shut down the PC and change the brightness",
+        "Answers" => "tell you the time and date",
+        "Schedule" => "set alarms and reminders",
+        _ => return None,
+    })
+}
+
+/// "a, b and c".
+fn join_words(items: &[&str]) -> String {
+    match items.len() {
+        0 => String::new(),
+        1 => items[0].to_string(),
+        _ => format!("{} and {}", items[..items.len() - 1].join(", "), items[items.len() - 1]),
+    }
+}
+
+fn list_pending() -> Result<String, String> {
+    let pendings = crate::pending::Pendings::open();
+    if pendings.items.is_empty() {
+        return Ok("nothing is queued".into());
+    }
+    let said: Vec<String> = pendings.items.iter().take(4).map(|p| p.sentence()).collect();
+    let more = pendings.items.len().saturating_sub(said.len());
+    let mut out = format!("{} queued: {}", pendings.items.len(), said.join(", then "));
+    if more > 0 {
+        out.push_str(&format!(", and {more} more"));
+    }
+    Ok(out)
+}
+
+fn cancel_pending(what: &str) -> Result<String, String> {
+    let mut pendings = crate::pending::Pendings::open();
+    if pendings.items.is_empty() {
+        return Ok("there's nothing queued to cancel".into());
+    }
+    let gone = pendings.cancel(what);
+    if gone.is_empty() {
+        return Err(format!("nothing queued matches \"{}\"", what.trim()));
+    }
+    pendings.save().map_err(|e| format!("I couldn't save the queue: {e}"))?;
+    let names: Vec<String> = gone.iter().take(2).map(|p| p.sentence()).collect();
+    Ok(format!("cancelled {} ({})", if gone.len() == 1 { "one" } else { "them" }, names.join(", ")))
+}
+
+/// "1,204" — big numbers are read as numbers, not as digits.
+fn thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1044,6 +1426,45 @@ mod tests {
             assert!(crate::tools::builtin(name).is_some(), "{name} is not in the catalogue");
         }
         assert_eq!(Op::from_tool("not_a_tool"), None);
+    }
+
+    /// Numbers that appear in an answer are said the way a person writes them.
+    #[test]
+    fn numbers_and_lists_read_like_speech() {
+        assert_eq!(thousands(0), "0");
+        assert_eq!(thousands(999), "999");
+        assert_eq!(thousands(1000), "1,000");
+        assert_eq!(thousands(1234567), "1,234,567");
+        assert_eq!(join_words(&[]), "");
+        assert_eq!(join_words(&["a"]), "a");
+        assert_eq!(join_words(&["a", "b"]), "a and b");
+        assert_eq!(join_words(&["a", "b", "c"]), "a, b and c");
+    }
+
+    /// "how long until 9pm" answers in the future tense, whatever the clock says.
+    #[test]
+    fn time_until_measures_from_now() {
+        let said = time_until("9 pm").expect("9 pm is a time");
+        assert!(said.contains(" in "), "{said}");
+        assert!(said.contains("9 pm"), "{said}");
+        // Something that is not a time is refused rather than guessed at.
+        assert!(time_until("the fridge").is_err());
+        assert!(time_until("").is_err());
+    }
+
+    /// "how many files" counts what is actually there.
+    #[test]
+    fn counting_files_works_on_a_real_folder() {
+        let dir = std::env::temp_dir().join(format!("wisp-count-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("inner")).unwrap();
+        std::fs::write(dir.join("a.txt"), b"hello").unwrap();
+        std::fs::write(dir.join("inner/b.txt"), b"world!").unwrap();
+        let tally = directory_tally(&dir);
+        assert_eq!(tally.1, 2, "two files");
+        assert_eq!(tally.2, 1, "one folder");
+        assert_eq!(tally.0, 11);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -21,6 +21,7 @@ pub mod config;
 pub mod fuzzy;
 pub mod machine;
 pub mod paths;
+pub mod pending;
 pub mod schedule;
 pub mod schedule_parse;
 pub mod secret;
@@ -29,6 +30,7 @@ pub mod voices;
 pub mod personality;
 pub mod tools;
 pub mod wake;
+pub mod when;
 pub mod wake_model;
 pub mod win;
 

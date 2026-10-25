@@ -236,6 +236,10 @@ struct App {
     home_command: String,
     /// The command the runner is working on, so the history can label it.
     test_command: String,
+    /// Actions queued for a moment or a condition, as the agent will see them.
+    pendings: wisp_core::pending::Pendings,
+    /// When the queue file was last read, so it is not re-read every frame.
+    pendings_at: Option<std::time::SystemTime>,
 }
 
 /// The schedule file, with a cached copy of what was last read from it.
@@ -358,6 +362,18 @@ impl App {
             fn_filter: String::new(),
             home_command: String::new(),
             test_command: String::new(),
+            pendings: wisp_core::pending::Pendings::open(),
+            pendings_at: None,
+        }
+    }
+
+    /// Re-read the queue if the agent has changed it.
+    fn refresh_pendings(&mut self) {
+        let path = wisp_core::pending::Pendings::path();
+        let stamp = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        if stamp != self.pendings_at {
+            self.pendings_at = stamp;
+            self.pendings = wisp_core::pending::Pendings::open();
         }
     }
 
@@ -730,6 +746,10 @@ impl App {
                 }
                 ui::pill(ui, &format!("{own} of your own"), if own > 0 { t.accent } else { t.muted });
                 ui::pill(ui, &format!("{scheduled} scheduled"), t.muted);
+                let queued = self.pendings.items.len();
+                if queued > 0 {
+                    ui::pill(ui, &format!("{queued} queued"), t.accent);
+                }
             });
             ui.add_space(10.0);
             ui.horizontal_wrapped(|ui| {
@@ -1676,6 +1696,75 @@ impl App {
 
     /// Alarms, reminders, to-dos and calendar events.
     fn tab_schedule(&mut self, ui: &mut egui::Ui, accent: Color32) {
+        let t = ui::theme(ui);
+
+        // ── queued for later ────────────────────────────────────────────
+        // Anything said with a "when" lives here until it happens: it is the
+        // only place the queue can be seen, and the only place it can be
+        // called off.
+        let mut cancel: Option<u64> = None;
+        let mut cancel_all = false;
+        ui::card_rows(ui, "Queued for later", "Waiting for a moment, or for something to happen", |ui| {
+            if self.pendings.items.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.add_space(14.0);
+                    ui.vertical(|ui| {
+                        ui.set_width(ui.available_width() - 28.0);
+                        ui::hint(
+                            ui,
+                            "Say \"shut down in 30 minutes\", \"lock the pc at 11pm\", \"close chrome when spotify closes\", \
+                             \"play a chime when the battery drops below 20\" — anything it can do now, it can do later.",
+                        );
+                    });
+                });
+                ui.add_space(8.0);
+            } else {
+                for entry in &self.pendings.items {
+                    ui.horizontal(|ui| {
+                        ui.add_space(14.0);
+                        ui::dot(ui, t.accent, 6.0);
+                        ui.vertical(|ui| {
+                            ui.set_width(ui.available_width() - 70.0);
+                            ui.label(RichText::new(&entry.label).size(13.0).color(t.text));
+                            ui.label(RichText::new(entry.trigger.describe()).size(11.5).color(t.muted));
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui::icon_button(ui, ui::ICON_DELETE, "Cancel this").clicked() {
+                                cancel = Some(entry.id);
+                            }
+                        });
+                    });
+                    ui.add_space(8.0);
+                }
+                ui.horizontal(|ui| {
+                    ui.add_space(14.0);
+                    if ui::ghost(ui, "Cancel them all").clicked() {
+                        cancel_all = true;
+                    }
+                });
+                ui.add_space(6.0);
+            }
+        });
+        if cancel_all {
+            self.pendings.items.clear();
+            if let Err(e) = self.pendings.save() {
+                self.toast(format!("couldn't save the queue: {e}"), false);
+            } else {
+                self.toast("Queue cleared", true);
+            }
+            self.pendings_at = None;
+        }
+        if let Some(id) = cancel {
+            if self.pendings.remove(id).is_some() {
+                if let Err(e) = self.pendings.save() {
+                    self.toast(format!("couldn't save the queue: {e}"), false);
+                } else {
+                    self.toast("Cancelled", true);
+                }
+            }
+            self.pendings_at = None;
+        }
+        let _ = accent;
         let now = Stamp::now();
         let mut schedule = self.schedule.edit();
         let names: Vec<String> = self.cfg.custom_tools.iter().map(|t| t.name.clone()).collect();
@@ -2825,8 +2914,12 @@ impl App {
             if let Some(r) = &d.reasoning {
                 out.push_str(&format!("\nIt thought: {r}\n"));
             }
-            let reply = wisp_core::personality::spoken_reply(&cfg, &[], d.answer.as_deref());
-            out.push_str(&format!("\nIt would say: \"{reply}\"\n"));
+            let reply = wisp_core::personality::dry_reply(&cfg, &d);
+            if reply.starts_with('(') {
+                out.push_str(&format!("\nIt would say: {reply}\n"));
+            } else {
+                out.push_str(&format!("\nIt would say: \"{reply}\"\n"));
+            }
             if execute {
                 let index = AppIndex::load_cache().unwrap_or_default();
                 for a in &d.actions {

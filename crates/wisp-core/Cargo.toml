@@ -49,4 +49,6 @@ features = [
     "Win32_System_Environment",
     # DPAPI, for the API key (see `secret`).
     "Win32_Security_Cryptography",
+    # Whether the screen is locked (see `win::screen_locked`).
+    "Win32_System_StationsAndDesktops",
 ]

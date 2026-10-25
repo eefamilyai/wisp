@@ -68,6 +68,33 @@ pub fn spoken_reply(cfg: &Config, outcomes: &[Outcome], answer: Option<&str>) ->
     reply(cfg, outcomes)
 }
 
+/// What a dry run should show: the model's words, a persona line, or an honest
+/// note that the answer is the action's own.
+///
+/// Without this, testing "what's queued" says "Sorry, I didn't catch that one" —
+/// because a dry run never ran anything, so there is no report to read out. The
+/// command was understood perfectly; there was just nothing to hear yet.
+pub fn dry_reply(cfg: &Config, decision: &crate::brain::Decision) -> String {
+    if let Some(text) = decision.answer.as_deref() {
+        let cleaned = crate::chat::clean_spoken(text);
+        if !cleaned.is_empty() {
+            return cleaned;
+        }
+    }
+    if decision.actions.is_empty() {
+        return reply(cfg, &[]);
+    }
+    if decision.actions.iter().any(|a| a.informational()) {
+        return "(the action's own answer, once it runs)".to_string();
+    }
+    let outcomes: Vec<Outcome> = decision
+        .actions
+        .iter()
+        .map(|a| Outcome::Done(a.clone(), String::new()))
+        .collect();
+    reply(cfg, &outcomes)
+}
+
 /// A lone success: the user's own wording wins, then answers, then a line.
 fn single(cfg: &Config, action: &Action, message: &str) -> String {
     if let Action::Custom { name, params } = action {
@@ -348,7 +375,7 @@ pub fn line(persona: Persona, moment: &Moment) -> String {
             Action::CompleteTodo { .. } => "{x}.",
             // Machine operations report what they did, and that report is the
             // line — "switched to Chrome", "battery at 42%".
-            Action::Machine { .. } => "{x}.",
+            Action::Machine { .. } | Action::Defer { .. } => "{x}.",
             Action::TellTime | Action::TellDate => "{x}.",
         },
         Moment::Failed(_, _) => pick(match persona {

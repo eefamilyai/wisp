@@ -126,3 +126,16 @@ fn resolve_models_dir() -> PathBuf {
 pub fn sibling_exe(name: &str) -> PathBuf {
     exe_dir().join(name)
 }
+
+/// The folders a bare file name is looked for in, in the order people mean.
+pub fn downloads_folder() -> Option<PathBuf> {
+    crate::win::known_folder(&windows::Win32::UI::Shell::FOLDERID_Downloads)
+}
+
+pub fn documents_folder() -> Option<PathBuf> {
+    crate::win::known_folder(&windows::Win32::UI::Shell::FOLDERID_Documents)
+}
+
+pub fn desktop_folder() -> Option<PathBuf> {
+    crate::win::known_folder(&windows::Win32::UI::Shell::FOLDERID_Desktop)
+}

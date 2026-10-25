@@ -68,6 +68,17 @@ pub fn execute_with(action: &Action, cfg: &Config, apps: &AppIndex, speaker: &dy
         Action::Custom { name, params } => run_custom(cfg, name, params, apps, speaker),
         Action::Machine { op, args } => crate::machine::run(*op, args, cfg, apps),
 
+        // ── Queued for later ───────────────────────────────────────────
+        // Nothing runs now: the entry goes into the queue and the agent's
+        // scheduler thread runs it when the trigger says so. Saying what will
+        // happen is the whole result.
+        Action::Defer { trigger, actions, label } => {
+            let mut pendings = crate::pending::Pendings::open();
+            pendings.add(trigger.clone(), actions.clone(), label.clone());
+            pendings.save().map_err(|e| format!("I couldn't save the queue: {e}"))?;
+            Ok(format!("I'll {label} {}", trigger.describe()))
+        }
+
         // ── The schedule ───────────────────────────────────────────────
         Action::Alarm { when, label } => add_item(ItemKind::Alarm, label, when, true),
         Action::Reminder { text, when } => {

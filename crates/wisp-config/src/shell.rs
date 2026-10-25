@@ -378,6 +378,7 @@ impl eframe::App for App {
         ui::set(&ctx, theme);
         ui::style(&ctx, &theme);
         self.poll_jobs();
+        self.refresh_pendings();
 
         // Keyboard: the pages in order, and save. Handled before any widget so
         // a focused text box cannot swallow them.

@@ -32,6 +32,7 @@ use std::sync::mpsc::channel;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use wisp_core::brain::Brain;
 use wisp_core::apps::AppIndex;
 use wisp_core::{win, Config};
 use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
@@ -203,6 +204,43 @@ fn main() {
             }
         } else {
             eprintln!("usage: --tts-dump <out.wav> <text…>");
+        }
+        return;
+    }
+
+    // `--ask "<command>" [--do]`: what it makes of a sentence, without a
+    // microphone. Prints the route, the actions and what would be said — and
+    // runs them with `--do`, which is how the queue is exercised by hand.
+    if args.iter().any(|a| a == "--ask") {
+        let rest: Vec<&String> = args.iter().skip_while(|a| *a != "--ask").skip(1).filter(|a| *a != "--do").collect();
+        let command = rest.iter().map(|w| w.as_str()).collect::<Vec<_>>().join(" ");
+        let run_it = args.iter().any(|a| a == "--do");
+        if command.trim().is_empty() {
+            eprintln!("usage: --ask \"<command>\" [--do]");
+            return;
+        }
+        let cfg = wisp_core::config::Config::load();
+        let apps = AppIndex::load_cache().unwrap_or_default();
+        let mut brain = Brain::new(
+            wisp_core::paths::models_dir().join(wisp_core::NEEDLE_MODEL),
+            cfg.needle_depth,
+        );
+        let decision = brain.decide(&command, &cfg, &apps);
+        println!("route    {:?} in {} ms", decision.via, decision.millis);
+        for action in &decision.actions {
+            println!("action   {action}");
+        }
+        if let Some(reasoning) = &decision.reasoning {
+            println!("thought  {reasoning}");
+        }
+        println!("say      {}", wisp_core::personality::dry_reply(&cfg, &decision));
+        if run_it {
+            for action in &decision.actions {
+                match wisp_core::actions::execute(action, &cfg, &apps) {
+                    Ok(message) => println!("done     {message}"),
+                    Err(e) => println!("failed   {e}"),
+                }
+            }
         }
         return;
     }

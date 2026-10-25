@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use needle_infer::v3_engine::{extract_tool_call, KvPrecision, V3Engine, V3Options};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::apps::AppIndex;
@@ -21,9 +21,10 @@ use crate::chat;
 use crate::config::{BrainKind, Config};
 use crate::fuzzy;
 use crate::machine;
+use crate::when;
 use crate::tools;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MediaKey {
     Pause,
@@ -33,7 +34,7 @@ pub enum MediaKey {
     Stop,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VolumeChange {
     Set(u8),
@@ -41,7 +42,7 @@ pub enum VolumeChange {
     Down,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Action {
     OpenApp(String),
     CloseApp(String),
@@ -66,6 +67,13 @@ pub enum Action {
     /// read the clipboard, go to sleep. One variant rather than forty, because
     /// the operation carries its own name and the runner is one function.
     Machine { op: machine::Op, args: Vec<(String, String)> },
+    /// The same actions, queued until a moment or a condition (see
+    /// [`crate::when`]). `label` is what the person called it, echoed back.
+    Defer {
+        trigger: crate::when::Trigger,
+        actions: Vec<Action>,
+        label: String,
+    },
 
     // ── The schedule ───────────────────────────────────────────────────
     /// "when" is the spoken time, parsed when it runs.
@@ -87,8 +95,10 @@ impl Action {
         matches!(
             self,
             // Every one of these reports something the user needs to hear: the
-            // battery percentage, the file it found, the brightness it set.
-            Action::Machine { .. }
+            // battery percentage, the file it found, the brightness it set, the
+            // hour a queued action will happen.
+            Action::Defer { .. }
+                | Action::Machine { .. }
                 | Action::TellTime
                 | Action::TellDate
                 | Action::Alarm { .. }
@@ -131,6 +141,7 @@ impl Action {
             }
             Action::Custom { name, .. } => name.replace('_', " "),
             Action::Machine { op, .. } => op.tool().replace('_', " "),
+            Action::Defer { label, .. } => label.clone(),
         }
     }
 }
@@ -173,6 +184,10 @@ impl std::fmt::Display for Action {
                 let filled: Vec<String> = args.iter().map(|(k, v)| format!("{k}={v:?}")).collect();
                 write!(f, "{} {}", op.tool(), filled.join(" "))
             }
+            Action::Defer { trigger, actions, label } => {
+                let inner: Vec<String> = actions.iter().map(|a| a.to_string()).collect();
+                write!(f, "defer({label:?} {}: {})", trigger.describe(), inner.join(", "))
+            }
         }
     }
 }
@@ -180,6 +195,8 @@ impl std::fmt::Display for Action {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum Via {
     Instant,
+    /// Queued for later, by a "when" in the sentence.
+    Defer,
     Needle,
     /// A hosted model, reached with the user's own key.
     Api,
@@ -241,6 +258,16 @@ impl Brain {
         let t = Instant::now();
         self.last_used = Instant::now();
         let command = clean_command(command, cfg);
+
+        // "…at 9pm", "…in 30 minutes", "…when I close this application": the
+        // same command, said with a *when* attached. Checked before anything
+        // else, because the trigger is the part of the sentence no phrase list
+        // can be expected to contain.
+        if let Some((trigger, rest)) = when::split(&command) {
+            if let Some(decision) = self.deferred(trigger, &rest, cfg, apps, t) {
+                return decision;
+            }
+        }
 
         if cfg.instant_commands {
             if let Some(actions) = instant(&command, cfg, apps) {
@@ -365,6 +392,72 @@ impl Brain {
         let decision = Decision { actions, via, answer, reasoning, millis: t.elapsed().as_millis() };
         self.remember(&command, &decision);
         decision
+    }
+
+    /// Turn "shut down" plus "at 9pm" into one queued action.
+    ///
+    /// Returns `None` — so the sentence is handled the ordinary way — when the
+    /// remaining half is not a command, when it is a schedule item (those carry
+    /// their own time), or when "this application" cannot be resolved to an app.
+    fn deferred(
+        &mut self,
+        trigger: when::Trigger,
+        rest: &str,
+        cfg: &Config,
+        apps: &AppIndex,
+        started: Instant,
+    ) -> Option<Decision> {
+        let rest = rest.trim();
+        if rest.is_empty() {
+            return None;
+        }
+        let trigger = self.anchor(trigger)?;
+        let queued = queue_from(trigger, rest, |text| self.resolve(text, cfg, apps))?;
+        if let Action::Defer { trigger, actions, .. } = &queued {
+            log::info!("deferring {actions:?} until {}", trigger.describe());
+        }
+        Some(Decision {
+            actions: vec![queued],
+            via: Via::Defer,
+            answer: None,
+            reasoning: None,
+            millis: started.elapsed().as_millis(),
+        })
+    }
+
+    /// "This application" has to become a particular program, now, while it is
+    /// still in front of the person who said it.
+    fn anchor(&self, trigger: when::Trigger) -> Option<when::Trigger> {
+        match trigger {
+            when::Trigger::AppCloses { ref app, pid: None } if app.trim().is_empty() => {
+                let front = crate::win::foreground_window()?;
+                log::info!("\"this application\" is {} (pid {})", front.title, front.pid);
+                Some(when::Trigger::AppCloses { app: front.app, pid: Some(front.pid) })
+            }
+            other => Some(other),
+        }
+    }
+
+    /// The command half of a deferred sentence, resolved without the fallbacks
+    /// the ordinary path has: an entry that later fired a web search for its own
+    /// wording would be a trap, not a feature.
+    fn resolve(&mut self, text: &str, cfg: &Config, apps: &AppIndex) -> Option<Vec<Action>> {
+        if cfg.instant_commands {
+            if let Some(actions) = instant(text, cfg, apps) {
+                return Some(actions);
+            }
+        }
+        let actions = match cfg.brain_kind {
+            BrainKind::Api => match self.ask_api(text, cfg) {
+                Ok((actions, _, _)) => actions,
+                Err(e) => {
+                    log::warn!("hosted model: {e}");
+                    self.ask_needle(text, cfg).map(|(a, _)| a).unwrap_or_default()
+                }
+            },
+            BrainKind::Local => self.ask_needle(text, cfg).map(|(a, _)| a).unwrap_or_default(),
+        };
+        (!actions.is_empty()).then_some(actions)
     }
 
     /// Keep a little context for the next command, so a hosted model can follow
@@ -1118,10 +1211,57 @@ fn needs_lookup(tool: &str) -> bool {
     matches!(tool, "open_app" | "close_app" | "open_website" | "web_search" | "youtube_search")
 }
 
+/// What may be queued, given the actions the command half resolves to.
+///
+/// Split out from the decision so the rule is in one place and can be tested
+/// without a model: backing out and queueing are not things to do later, and a
+/// schedule tool already carries its own time ("remind me to call mum at 4 pm"
+/// must not also be queued for 4 pm).
+fn queue_from(
+    trigger: when::Trigger,
+    rest: &str,
+    resolve: impl FnOnce(&str) -> Option<Vec<Action>>,
+) -> Option<Action> {
+    let mut actions = resolve(rest)?;
+    actions.retain(|a| !matches!(a, Action::Disengage | Action::Defer { .. }));
+    if actions.is_empty() || actions.iter().any(is_schedule_action) {
+        return None;
+    }
+    Some(Action::Defer { trigger, actions, label: rest.trim().to_string() })
+}
+
+/// Is this a schedule tool, which takes its own time? "remind me to call mum at
+/// 4 pm" must not also be queued for 4 pm.
+fn is_schedule_action(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::Alarm { .. }
+            | Action::Reminder { .. }
+            | Action::CalendarEvent { .. }
+            | Action::Todo { .. }
+            | Action::ShowSchedule { .. }
+            | Action::CancelSchedule { .. }
+            | Action::ClearSchedule { .. }
+            | Action::CompleteTodo { .. }
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::apps::AppEntry;
+
+    /// The instant path, or the trigger split, whichever answers first — the
+    /// order `decide` uses, without needing a model.
+    fn instant_or_defer(command: &str, cfg: &Config, apps: &AppIndex) -> Option<Action> {
+        let cleaned = clean_command(command, cfg);
+        if let Some((trigger, rest)) = crate::when::split(&cleaned) {
+            if let Some(queued) = queue_from(trigger, &rest, |text| instant(text, cfg, apps)) {
+                return Some(queued);
+            }
+        }
+        instant(&cleaned, cfg, apps).and_then(|mut a| if a.is_empty() { None } else { Some(a.remove(0)) })
+    }
 
     fn index() -> AppIndex {
         let e = |n: &str| AppEntry { name: n.into(), app_id: Some(n.into()), path: None, exe: None };
@@ -1272,6 +1412,16 @@ mod tests {
             ("how much room is left", Op::DiskSpace),
             ("what's eating my ram", Op::TopProcesses),
             ("do I have wifi", Op::NetworkStatus),
+            // The five Ws and the H, each answered without the model.
+            ("who am I", Op::WhoAmI),
+            ("what can you do", Op::Capabilities),
+            ("why is my computer slow", Op::WhySlow),
+            ("how many files are in downloads", Op::CountFiles),
+            ("where is my downloads folder", Op::WhereFolder),
+            ("how long until 9pm", Op::TimeUntil),
+            ("what's queued", Op::ListPending),
+            ("what's coming up", Op::NextUp),
+            ("cancel everything you queued", Op::CancelPending),
         ];
         for (said, want) in cases {
             match run(said) {
@@ -1297,6 +1447,67 @@ mod tests {
         assert_eq!(args("take a note buy milk"), vec![("text".to_string(), "buy milk".to_string())]);
         assert_eq!(args("set the brightness to 40"), vec![("percent".to_string(), "40".to_string())]);
         assert_eq!(args("what did I note about the plumber"), vec![("query".to_string(), "the plumber".to_string())]);
+    }
+
+    /// A command with a "when" becomes the same command, queued.
+    #[test]
+    fn a_command_can_be_queued_for_later() {
+        use crate::when::Trigger;
+        let cfg = Config::default();
+        let apps = index();
+        let decide = |c: &str| instant_or_defer(c, &cfg, &apps);
+
+        // "shut down in 30 minutes"
+        match decide("shut down in 30 minutes") {
+            Some(Action::Defer { trigger, actions, label }) => {
+                assert!(matches!(trigger, Trigger::At { .. }));
+                assert_eq!(actions, vec![Action::Machine { op: crate::machine::Op::ShutdownPc, args: Vec::new() }]);
+                assert_eq!(label, "shut down");
+            }
+            other => panic!("got {other:?}"),
+        }
+
+        // "shut down at 9pm" — same action, a moment instead of an interval.
+        match decide("shut down at 9pm") {
+            Some(Action::Defer { trigger, actions, .. }) => {
+                assert!(matches!(trigger, Trigger::At { .. }));
+                assert!(matches!(actions[0], Action::Machine { op: crate::machine::Op::ShutdownPc, .. }));
+            }
+            other => panic!("got {other:?}"),
+        }
+
+        // Any action, not just power: "close chrome when spotify closes".
+        match decide("close chrome when spotify closes") {
+            Some(Action::Defer { trigger, actions, .. }) => {
+                assert_eq!(trigger, Trigger::AppCloses { app: "spotify".into(), pid: None });
+                assert_eq!(actions, vec![Action::CloseApp("Google Chrome".into())]);
+            }
+            other => panic!("got {other:?}"),
+        }
+
+        // And the other way round: "open chrome in 5 minutes".
+        match decide("open chrome in 5 minutes") {
+            Some(Action::Defer { actions, .. }) => assert!(matches!(actions[0], Action::OpenApp(_))),
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    /// Things that must keep meaning what they meant.
+    #[test]
+    fn a_when_never_swallows_an_ordinary_command() {
+        let cfg = Config::default();
+        let apps = index();
+        let decide = |c: &str| instant_or_defer(c, &cfg, &apps);
+        // The reminder carries its own time; queueing it as well would be wrong.
+        assert!(!matches!(decide("remind me to call mum at 4 pm"), Some(Action::Defer { .. })));
+        // The alarm likewise.
+        assert!(!matches!(decide("set an alarm for 7:30 am"), Some(Action::Defer { .. })));
+        // A plain command is untouched.
+        assert_eq!(decide("open chrome"), Some(Action::OpenApp("Google Chrome".into())));
+        // A question with a time in it is a question.
+        assert!(!matches!(decide("what's on my schedule at 9"), Some(Action::Defer { .. })));
+        // Backing out is never queued.
+        assert!(!matches!(decide("never mind at 9pm"), Some(Action::Defer { .. })));
     }
 
     /// Adding forty functions must not steal a single command that already

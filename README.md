@@ -38,7 +38,7 @@ light/dark setting, or you can pin it either way.
 
 ## What it can do
 
-Seventy-one functions, in ten groups. Anything with a phrase in it is understood
+Eighty functions, in ten groups. Anything with a phrase in it is understood
 **instantly** — no model, no waiting.
 
 ### On the machine
@@ -59,6 +59,49 @@ Shut down and restart wait 30 seconds and can be cancelled by voice. Each one is
 the same Win32 call a person would make with the mouse.
 [docs/computer.md](docs/computer.md) lists every function, what it touches and
 what it will not do.
+
+### When, not now
+
+Anything it can do now, it can do later — or on a condition. There is no
+"shutdown timer": there is a queue, and every command can be said with a *when*
+attached.
+
+| Say | What happens |
+|---|---|
+| *"shut down in 30 minutes"* | At that moment. It survives a restart, and is said out loud when it is missed rather than run hours late |
+| *"shut down at 9pm"* | The next time the clock shows it |
+| *"shut down when I close this application"* | When the window in front of you exits — that exact process, not a name that looks like it |
+| *"close chrome when spotify closes"* | Any action, not just power |
+| *"lock the pc at 11pm"* · *"dim the screen when I lock it"* · *"play the music when I unplug the charger"* | Any action, any trigger |
+| *"open the report when chrome starts"* · *"take a note ring the plumber when the battery drops below 20"* | Programs starting, battery levels, mains, network, the lock screen, idleness, a file appearing |
+
+It confirms what it understood, in your own words: *"I'll shut down at 9 pm"*.
+Everything queued is listed in **Settings → Alarms & reminders → Queued for
+later**, can be cancelled one at a time or all at once, and the dashboard shows
+how many are waiting. By voice: *"what's queued"*, *"what's coming up"*,
+*"cancel everything you queued"*.
+
+Edges are edges: *"when I unplug the charger"* said while it is already
+unplugged waits for the next unplugging, because the status quo is not an event.
+[docs/when.md](docs/when.md) has the full set and the rules.
+
+### Ask it something
+
+The five Ws and the H, each answered by whatever can answer it best: a function
+on this machine first, a hosted model if you have one, a web search last.
+
+| | Ask | Answered from |
+|---|---|---|
+| **Who** | *"who am I"* · *"who's logged in"* · *"what's using my cpu"* | the account, the machine, the process list |
+| **What** | *"what's this window"* · *"what's open"* · *"what's on my clipboard"* · *"what can you do"* | the window list, the clipboard, the catalogue |
+| **When** | *"when's my next alarm"* · *"how long until 9pm"* · *"what's coming up"* · and everything above | the schedule and the queue |
+| **Where** | *"where is my payslip"* · *"where is my downloads folder"* · *"where did I save the build"* | your own folders |
+| **Why** | *"why is my computer slow"* · *"why is it lagging"* | the processor, memory, the hungriest app and the free space, in one sentence: *"two things: memory is 94 percent full (14.9 of 15.9 GB), and Chrome alone is using 31 percent of the processor. Closing Chrome should give you the most back."* |
+| **How** | *"how much battery is left"* · *"how much space is left"* · *"how many files are in downloads"* · *"how long has the pc been on"* | the machine's own numbers |
+
+A question with no local answer goes to the hosted model when there is one, and
+to a web search when there is not — so *"what is the haber process"* still opens
+a search rather than pretending to know.
 
 ### Everything else
 
@@ -240,6 +283,8 @@ it, MSVC builds whisper.cpp unoptimised and it runs about 30× slower.
 * `Wisp.exe --demo`: plays through every bubble state.
 * `Wisp.exe --say "text" [--config file.toml]`: speak once (used by voice preview).
 * `Wisp.exe --chime`: play the wake-up chime once (used by the settings app).
+* `Wisp.exe --ask "<command>" [--do]`: what it makes of a sentence — the route, the actions,
+  and what it would say. `--do` runs them, which is how the queue is exercised by hand.
 * `Wisp.exe --bench-needle "<command>" [depth]`: where a command's milliseconds go.
 * `Wisp.exe --bench-stt <model> <clip.wav>`: time a recogniser on a real clip.
 * `WispSettings.exe --tab home|computer|voice|listening|schedule|brain|browser|apps|functions|test`
@@ -251,8 +296,9 @@ it, MSVC builds whisper.cpp unoptimised and it runs about 30× slower.
 * `Uninstall.exe --uninstall [--dir X] [--delete-settings]` — both `--` and `/`
   forms are accepted, because that is how launchers rewrite it.
 
-Settings are stored in `%APPDATA%\Wisp\config.toml`, and the log is `agent.log`
-in the same folder. The agent restarts itself when settings change.
+Settings are stored in `%APPDATA%\Wisp\config.toml`, the queue of "when" actions in
+`pending.json`, the schedule in `schedule.json` and your notes in `notes.md`; the log
+is `agent.log`, all in the same folder. The agent restarts itself when settings change.
 
 ## Upgrading from NeedleVoice
 
@@ -274,7 +320,8 @@ crates/wisp-core      config, app discovery, the function catalogue (built-ins +
                       custom, Python + step sequences), the two brains (Needle and
                       the hosted client), the machine itself (windows, clipboard,
                       files, power), action runner, schedule store + spoken-time
-                      parser, wake parsing, model downloaders, personality lines
+                      parser, the "when" triggers and the queue built on them, wake
+                      parsing, model downloaders, personality lines
 crates/wisp-agent     audio, VAD, Moonshine/Whisper, keyword spotter, listener
                       state machine, alarm scheduler, bubble overlay, tray,
                       neural TTS playback

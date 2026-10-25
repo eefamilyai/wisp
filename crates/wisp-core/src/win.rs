@@ -1969,6 +1969,38 @@ fn grant_privilege(name: PCWSTR) -> bool {
     }
 }
 
+/// Is the workstation locked right now?
+///
+/// The documented way to ask: the *input* desktop can only be opened while the
+/// user is at it, so failing to open it means the lock screen (or a UAC prompt's
+/// desktop) has it instead. No polling of windows, no title matching.
+pub fn screen_locked() -> bool {
+    use windows::Win32::System::StationsAndDesktops::{CloseDesktop, OpenInputDesktop, DESKTOP_CONTROL_FLAGS, DESKTOP_READOBJECTS};
+    unsafe {
+        match OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_READOBJECTS) {
+            Ok(desktop) => {
+                let _ = CloseDesktop(desktop);
+                false
+            }
+            Err(_) => true,
+        }
+    }
+}
+
+/// How long since the last keyboard or mouse input.
+pub fn idle_time() -> std::time::Duration {
+    use windows::Win32::System::SystemInformation::GetTickCount64;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+    let mut info = LASTINPUTINFO { cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+    if unsafe { GetLastInputInfo(&mut info) }.as_bool() {
+        let now = unsafe { GetTickCount64() } as u32;
+        let idle_ms = now.wrapping_sub(info.dwTime);
+        std::time::Duration::from_millis(idle_ms as u64)
+    } else {
+        std::time::Duration::ZERO
+    }
+}
+
 /// Put the machine to sleep. Windows requires a privilege for this, which a
 /// normal user account holds but has to ask for.
 pub fn sleep_pc() -> Result<(), String> {

@@ -1,8 +1,8 @@
 # What Wisp can do to your computer
 
-Wisp has seventy-one functions. Forty of them touch the machine itself: windows,
-files, the clipboard, the power state. This page is the full list, what each one
-actually does, and the rules that keep it safe.
+Wisp has eighty functions. Forty-nine of them touch the machine itself: windows,
+files, the clipboard, the power state. This page is the list, what each one actually
+does, and the rules that keep it safe.
 
 Everything here runs **locally, on request**. There is no background access, no
 watcher process, and nothing is sent anywhere. Each function is the same Win32
@@ -52,6 +52,8 @@ never leaves the profile folder unless you give it a path.
 | `recycle_file` | *"delete the file old draft"* | Moves **one** file to the Recycle Bin. If two files match it names them both and does nothing |
 | `empty_recycle_bin` | *"empty the recycle bin"* | Empties it. The only irreversible operation here, and it is one you asked for by name |
 | `folder_size` | *"how big is my downloads folder"* | Total size and file count, counted with a hard cap so a huge folder cannot freeze it |
+| `count_files` | *"how many files are in downloads"* | Files and folders, counted |
+| `where_folder` | *"where is my downloads folder"* | The full path, and what is in it |
 | `take_note` | *"take a note ring the plumber"* | Appends a timestamped line to `%APPDATA%\Wisp\notes.md` |
 | `read_notes` | *"read my notes"* | Reads back the four most recent |
 | `search_notes` | *"what did I note about the plumber"* | Finds notes that mention it |
@@ -85,6 +87,8 @@ loud.
 | `network_status` | *"am I online"*, *"what's my ip"* | Whether there is a route out, this machine's address, and the Wi-Fi network name |
 | `machine_info` | *"what are my specs"* | Processor, threads, memory, Windows version, computer name |
 | `is_app_running` | *"is spotify running"* | Yes or no |
+| `who_am_i` | *"who am i"*, *"who's logged in"* | The account, the machine and the Windows build |
+| `why_slow` | *"why is my computer slow"* | One or two concrete reasons with the numbers behind them — the processor, the memory, a single greedy app, a full drive — and what would give the most back |
 | `screenshot` | *"take a screenshot"* | Saves a PNG of every display to `Pictures\Wisp` |
 | `copy_screenshot` | *"copy a screenshot"* | Puts the screenshot on the clipboard, ready to paste |
 | `lock_pc`, `show_desktop`, `close_window`, `open_settings` | *"lock my pc"*, *"show desktop"*, *"close this window"*, *"open windows settings"* | The everyday ones |
@@ -101,6 +105,15 @@ loud.
 | `turn_off_screen` | *"turn off the screen"* | Powers the display off without locking. Any key brings it back |
 | `brightness_set` | *"set the brightness to 40"* | Screen brightness, through WMI — laptop panels and panels that expose it; other screens say so instead of pretending |
 | `brightness_up` / `brightness_down` | *"dim the screen"*, *"brighten the screen"* | 20 % at a time |
+
+## Queued actions
+
+Any of these can also be queued: *"shut down in 30 minutes"*, *"lock the pc at
+11pm"*, *"close chrome when spotify closes"*, *"dim the screen when I lock it"*.
+The queue is one switch-free list in **Settings → Alarms & reminders**, and the
+functions that work with it are `list_pending` (*"what's queued"*),
+`next_up` (*"what's coming up"*) and `cancel_pending` (*"cancel everything you
+queued"*). [docs/when.md](when.md) is the reference.
 
 ## What it will not do
 
