@@ -139,6 +139,11 @@ impl BrainKind {
 }
 
 /// The hosted services, each with its own request shape.
+///
+/// Almost all of them speak the same JSON dialect — the one OpenAI published —
+/// so a new one is a line in this table rather than a new code path. The three
+/// that do not (Anthropic, Gemini, and anything proprietary) are their own
+/// [`Shape`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApiProvider {
@@ -146,13 +151,46 @@ pub enum ApiProvider {
     Anthropic,
     Gemini,
     OpenRouter,
-    /// Anything that speaks the OpenAI shape: Ollama, LM Studio, vLLM, a proxy.
+    DeepSeek,
+    Groq,
+    Mistral,
+    XAi,
+    /// Anything else that speaks the OpenAI shape: Ollama, LM Studio, vLLM,
+    /// Azure OpenAI, a gateway. The user supplies the address.
     Custom,
 }
 
+/// The JSON dialect a service speaks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shape {
+    /// `POST {base}/chat/completions`, `tools: [{type: function, …}]`.
+    OpenAi,
+    /// `POST {base}/v1/messages`, `system` at the top level.
+    Anthropic,
+    /// `POST {base}/v1beta/models/{model}:generateContent`.
+    Gemini,
+}
+
 impl ApiProvider {
-    pub const ALL: [ApiProvider; 5] =
-        [ApiProvider::OpenAi, ApiProvider::Anthropic, ApiProvider::Gemini, ApiProvider::OpenRouter, ApiProvider::Custom];
+    pub const ALL: [ApiProvider; 9] = [
+        ApiProvider::OpenAi,
+        ApiProvider::Anthropic,
+        ApiProvider::Gemini,
+        ApiProvider::OpenRouter,
+        ApiProvider::DeepSeek,
+        ApiProvider::Groq,
+        ApiProvider::Mistral,
+        ApiProvider::XAi,
+        ApiProvider::Custom,
+    ];
+
+    pub fn shape(self) -> Shape {
+        match self {
+            ApiProvider::Anthropic => Shape::Anthropic,
+            ApiProvider::Gemini => Shape::Gemini,
+            _ => Shape::OpenAi,
+        }
+    }
 
     pub fn label(self) -> &'static str {
         match self {
@@ -160,7 +198,26 @@ impl ApiProvider {
             ApiProvider::Anthropic => "Anthropic (Claude)",
             ApiProvider::Gemini => "Google (Gemini)",
             ApiProvider::OpenRouter => "OpenRouter",
+            ApiProvider::DeepSeek => "DeepSeek",
+            ApiProvider::Groq => "Groq",
+            ApiProvider::Mistral => "Mistral",
+            ApiProvider::XAi => "xAI (Grok)",
             ApiProvider::Custom => "Custom / local model server",
+        }
+    }
+
+    /// The name for a chip, where nine of them share a row.
+    pub fn short(self) -> &'static str {
+        match self {
+            ApiProvider::OpenAi => "OpenAI",
+            ApiProvider::Anthropic => "Claude",
+            ApiProvider::Gemini => "Gemini",
+            ApiProvider::OpenRouter => "OpenRouter",
+            ApiProvider::DeepSeek => "DeepSeek",
+            ApiProvider::Groq => "Groq",
+            ApiProvider::Mistral => "Mistral",
+            ApiProvider::XAi => "xAI",
+            ApiProvider::Custom => "Custom / local",
         }
     }
 
@@ -171,9 +228,41 @@ impl ApiProvider {
             ApiProvider::Anthropic => "https://console.anthropic.com/settings/keys",
             ApiProvider::Gemini => "https://aistudio.google.com/apikey",
             ApiProvider::OpenRouter => "https://openrouter.ai/keys",
+            ApiProvider::DeepSeek => "https://platform.deepseek.com/api_keys",
+            ApiProvider::Groq => "https://console.groq.com/keys",
+            ApiProvider::Mistral => "https://console.mistral.ai/api-keys",
+            ApiProvider::XAi => "https://console.x.ai",
             ApiProvider::Custom => "",
         }
     }
+
+    /// How this service is asked to think. Only OpenAI and OpenRouter take an
+    /// effort level; the others choose it by model ("deepseek-reasoner", Groq's
+    /// R1 builds), so sending a field they do not know is asking for a 400.
+    pub fn thinking(self) -> ThinkingStyle {
+        match self {
+            ApiProvider::OpenAi => ThinkingStyle::Effort,
+            ApiProvider::OpenRouter => ThinkingStyle::ReasoningObject,
+            ApiProvider::Anthropic => ThinkingStyle::TokenBudget,
+            ApiProvider::Gemini => ThinkingStyle::GeminiBudget,
+            _ => ThinkingStyle::ByModel,
+        }
+    }
+}
+
+/// How a service is told to think harder, if it can be told at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThinkingStyle {
+    /// `reasoning_effort: low|medium|high` (OpenAI).
+    Effort,
+    /// `reasoning: {effort: …}` (OpenRouter's normalised form).
+    ReasoningObject,
+    /// `thinking: {type: enabled, budget_tokens: n}` (Anthropic).
+    TokenBudget,
+    /// `generationConfig.thinkingConfig.thinkingBudget` (Gemini).
+    GeminiBudget,
+    /// Chosen by the model name; the setting is a suggestion, not a parameter.
+    ByModel,
 }
 
 /// How hard the model should think before answering, on the services that let

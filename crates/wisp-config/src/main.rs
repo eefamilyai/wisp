@@ -1542,7 +1542,7 @@ impl App {
                 ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
                 for p in ApiProvider::ALL {
                     let selected = provider == p;
-                    let text = RichText::new(p.label()).size(12.5).color(if selected { t.on_accent } else { t.muted });
+                    let text = RichText::new(p.short()).size(12.5).color(if selected { t.on_accent } else { t.muted });
                     let button = egui::Button::new(text)
                         .fill(if selected { t.accent } else { t.inset })
                         .stroke(t.hairline())

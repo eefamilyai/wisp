@@ -735,7 +735,9 @@ mod tests {
             let _ = trigger.state(&world);
         }
         let at = Trigger::At { stamp: Stamp::now().add_minutes(90) };
-        assert!(at.describe().contains(':'), "{}", at.describe());
+        let said = at.describe();
+        assert!(said.starts_with("at ") || said.contains(" at "), "{said}");
+        assert!(said.contains("am") || said.contains("pm"), "{said}");
     }
 
     /// The evaluation rules, one by one, against a world described by hand.

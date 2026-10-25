@@ -39,7 +39,16 @@ commands, and still calls the functions when the request is one of those.
 | **Anthropic** | console.anthropic.com/settings/keys | Thinking is a real token budget; the answer cap grows to fit it |
 | **Google Gemini** | aistudio.google.com/apikey | Thinking is a `thinkingBudget`; thought summaries are logged, not spoken |
 | **OpenRouter** | openrouter.ai/keys | One key for many vendors; thinking is normalised to an effort level |
-| **Custom / local** | — | Anything that speaks the OpenAI API: Ollama, LM Studio, vLLM, llama.cpp's server, a gateway. No key needed |
+| **DeepSeek** | platform.deepseek.com/api_keys | `deepseek-chat` for everyday commands, `deepseek-reasoner` when a request is worth thinking about. Its thinking arrives as `reasoning_content` and is logged, not spoken |
+| **Groq** | console.groq.com/keys | Very fast open models. `llama-3.3-70b-versatile` is a good function-caller |
+| **Mistral** | console.mistral.ai/api-keys | `mistral-small-latest` and friends |
+| **xAI** | console.x.ai | Grok models |
+| **Custom / local** | — | Anything that speaks the OpenAI API: Ollama, LM Studio, vLLM, llama.cpp's server, Azure OpenAI, a gateway. The address is yours to set |
+
+DeepSeek, Groq, Mistral and xAI speak the same JSON as OpenAI — one row in the
+provider table in `crates/wisp-core/src/config.rs`, and the request, the tool
+schema, the reply and the model list all follow. Adding another is that row plus
+a test case.
 
 ### Setting it up
 
@@ -58,12 +67,18 @@ commands, and still calls the functions when the request is one of those.
 
 "How hard should it think before answering" maps to each service's own control:
 
-| Level | OpenAI / OpenRouter | Anthropic | Gemini | Feels like |
+| Level | OpenAI | OpenRouter | Anthropic | Gemini | Feels like |
 |---|---|---|---|---|
-| **Off** | no reasoning field; temperature is used instead | no thinking block | no thinking config | Fastest, cheapest. Right for *"open Chrome"* |
-| **Low** | `reasoning_effort: low` | 1,024-token budget | `thinkingBudget: 1024` | A good default for a voice command |
-| **Medium** | `medium` | 4,096 | 2,048 | Noticeably slower, better on fiddly requests |
-| **High** | `high` | 8,192 | 8,192 | Several seconds. For problems worth it |
+| **Off** | no reasoning field; temperature is used instead | nothing | no thinking block | no thinking config | Fastest, cheapest. Right for *"open Chrome"* |
+| **Low** | `reasoning_effort: low` | `reasoning.effort: low` | 1,024-token budget | `thinkingBudget: 1024` | A good default for a voice command |
+| **Medium** | `medium` | `medium` | 4,096 | 2,048 | Noticeably slower, better on fiddly requests |
+| **High** | `high` | `high` | 8,192 | 8,192 | Several seconds. For problems worth it |
+
+**DeepSeek, Groq, Mistral, xAI and custom servers choose thinking by model**, not
+by a parameter — `deepseek-chat` against `deepseek-reasoner`, or a Groq R1 build.
+Nothing is sent to them, because a service that does not know a field rejects the
+whole request for it. Pick the thinking model in the model box instead; the level
+is ignored there, and the UI says so.
 
 Thinking tokens cost money and time, and a spoken answer is one or two sentences
 either way — which is why **Low** is the default rather than the maximum. A

@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use crate::config::{ApiProvider, Config, Thinking};
+use crate::config::{ApiProvider, Config, Shape, Thinking, ThinkingStyle};
 
 /// One previous exchange, kept so a follow-up ("the other one") means something.
 #[derive(Debug, Clone)]
@@ -57,6 +57,10 @@ impl ApiProvider {
             ApiProvider::Anthropic => "https://api.anthropic.com",
             ApiProvider::Gemini => "https://generativelanguage.googleapis.com",
             ApiProvider::OpenRouter => "https://openrouter.ai/api/v1",
+            ApiProvider::DeepSeek => "https://api.deepseek.com/v1",
+            ApiProvider::Groq => "https://api.groq.com/openai/v1",
+            ApiProvider::Mistral => "https://api.mistral.ai/v1",
+            ApiProvider::XAi => "https://api.x.ai/v1",
             // Anything that speaks the OpenAI shape: Ollama, LM Studio, vLLM,
             // a proxy. Ollama's default endpoint is the most useful starting
             // point because it needs no key and no account.
@@ -64,20 +68,26 @@ impl ApiProvider {
         }
     }
 
-    /// The model to use when the user has not chosen one.
+    /// The model to use when the user has not chosen one. Model names come and
+    /// go, so the picker can fetch the real list; these are only the opening
+    /// suggestion, and "Fetch the list" is the source of truth.
     pub fn default_model(self) -> &'static str {
         match self {
             ApiProvider::OpenAi => "gpt-4.1-mini",
             ApiProvider::Anthropic => "claude-sonnet-4-5",
             ApiProvider::Gemini => "gemini-2.5-flash",
             ApiProvider::OpenRouter => "openai/gpt-4.1-mini",
+            ApiProvider::DeepSeek => "deepseek-chat",
+            ApiProvider::Groq => "llama-3.3-70b-versatile",
+            ApiProvider::Mistral => "mistral-small-latest",
+            ApiProvider::XAi => "grok-3",
             ApiProvider::Custom => "",
         }
     }
 
     pub fn needs_key(self) -> bool {
         // A local model server does not want one.
-        !matches!(self, ApiProvider::Custom)
+        self != ApiProvider::Custom
     }
 }
 
@@ -149,14 +159,14 @@ fn tools_for(provider: ApiProvider, tools_json: &str) -> Value {
     if tools.is_empty() {
         return Value::Array(Vec::new());
     }
-    match provider {
-        ApiProvider::OpenAi | ApiProvider::OpenRouter | ApiProvider::Custom => Value::Array(
+    match provider.shape() {
+        Shape::OpenAi => Value::Array(
             tools
                 .into_iter()
                 .map(|t| json!({"type": "function", "function": t}))
                 .collect(),
         ),
-        ApiProvider::Anthropic => Value::Array(
+        Shape::Anthropic => Value::Array(
             tools
                 .into_iter()
                 .map(|t| {
@@ -170,7 +180,7 @@ fn tools_for(provider: ApiProvider, tools_json: &str) -> Value {
         ),
         // Gemini wants OpenAPI-flavoured schemas and rejects empty objects in
         // places other services ignore, so the shape is tidied here.
-        ApiProvider::Gemini => {
+        Shape::Gemini => {
             let declarations: Vec<Value> = tools
                 .into_iter()
                 .map(|t| {
@@ -214,8 +224,11 @@ pub fn plan(cfg: &Config, command: &str, tools_json: &str, history: &[Turn]) -> 
     let system = system_prompt(cfg);
     let tools = tools_for(cfg.api_provider, tools_json);
 
-    match cfg.api_provider {
-        ApiProvider::OpenAi | ApiProvider::OpenRouter | ApiProvider::Custom => {
+    let provider = cfg.api_provider;
+    match provider.shape() {
+        // Every one of these speaks the shape OpenAI published: chat
+        // completions, a bearer token, tools as function wrappers.
+        Shape::OpenAi => {
             let mut messages: Vec<Value> = vec![json!({"role": "system", "content": system})];
             for turn in history {
                 messages.push(json!({"role": "user", "content": turn.ask}));
@@ -234,30 +247,34 @@ pub fn plan(cfg: &Config, command: &str, tools_json: &str, history: &[Turn]) -> 
             }
             // A reasoning family rejects both of these; every other model wants
             // the token cap under its old name.
-            if is_reasoning_model(&model) || cfg.api_provider == ApiProvider::OpenRouter {
+            if is_reasoning_model(&model) || provider == ApiProvider::OpenRouter {
                 body["max_completion_tokens"] = json!(max_tokens);
             } else {
                 body["max_tokens"] = json!(max_tokens);
             }
-            if cfg.api_thinking != Thinking::Off {
-                if cfg.api_provider == ApiProvider::OpenRouter {
-                    // OpenRouter normalises reasoning across vendors under one key.
-                    body["reasoning"] = json!({"effort": effort_word(cfg.api_thinking)});
-                } else if cfg.api_provider == ApiProvider::OpenAi {
-                    body["reasoning_effort"] = json!(effort_word(cfg.api_thinking));
+            let thinking = cfg.api_thinking;
+            match provider.thinking() {
+                ThinkingStyle::Effort if thinking != Thinking::Off => {
+                    body["reasoning_effort"] = json!(effort_word(thinking));
                 }
-                // A custom server may not know the field at all, so it is left
-                // out there rather than rejected by a strict one.
-            } else {
-                body["temperature"] = json!(cfg.api_temperature.clamp(0.0, 2.0));
+                ThinkingStyle::ReasoningObject if thinking != Thinking::Off => {
+                    body["reasoning"] = json!({"effort": effort_word(thinking)});
+                }
+                _ if thinking == Thinking::Off => {
+                    body["temperature"] = json!(cfg.api_temperature.clamp(0.0, 2.0));
+                }
+                // ByModel: the service chooses by model name, so there is
+                // nothing to send — and services that do not know the field
+                // reject the whole request for it.
+                _ => {}
             }
             let mut headers = vec![("authorization".to_string(), format!("Bearer {key}"))];
-            if cfg.api_provider == ApiProvider::OpenRouter {
+            if provider == ApiProvider::OpenRouter {
                 headers.push(("x-title".to_string(), crate::PRODUCT.to_string()));
             }
             Ok(Plan { url: format!("{base}/chat/completions"), headers, body })
         }
-        ApiProvider::Anthropic => {
+        Shape::Anthropic => {
             let mut messages: Vec<Value> = Vec::new();
             for turn in history {
                 messages.push(json!({"role": "user", "content": turn.ask}));
@@ -291,7 +308,7 @@ pub fn plan(cfg: &Config, command: &str, tools_json: &str, history: &[Turn]) -> 
                 body,
             })
         }
-        ApiProvider::Gemini => {
+        Shape::Gemini => {
             let mut contents: Vec<Value> = Vec::new();
             for turn in history {
                 contents.push(json!({"role": "user", "parts": [{"text": turn.ask}]}));
@@ -338,8 +355,8 @@ pub fn parse(provider: ApiProvider, body: &Value) -> Result<Reply, String> {
     let mut text = String::new();
     let mut calls = Vec::new();
     let mut reasoning: Option<String> = None;
-    match provider {
-        ApiProvider::OpenAi | ApiProvider::OpenRouter | ApiProvider::Custom => {
+    match provider.shape() {
+        Shape::OpenAi => {
             let message = &body["choices"][0]["message"];
             if let Some(content) = message["content"].as_str() {
                 text.push_str(content);
@@ -364,7 +381,7 @@ pub fn parse(provider: ApiProvider, body: &Value) -> Result<Reply, String> {
                 reasoning = Some(r.to_string());
             }
         }
-        ApiProvider::Anthropic => {
+        Shape::Anthropic => {
             let blocks = body["content"].as_array().cloned().unwrap_or_default();
             let mut thinking = String::new();
             for block in blocks {
@@ -384,7 +401,7 @@ pub fn parse(provider: ApiProvider, body: &Value) -> Result<Reply, String> {
                 reasoning = Some(thinking);
             }
         }
-        ApiProvider::Gemini => {
+        Shape::Gemini => {
             let parts = body["candidates"][0]["content"]["parts"].as_array().cloned().unwrap_or_default();
             let mut thinking = String::new();
             for part in parts {
@@ -536,16 +553,16 @@ pub fn list_models(cfg: &Config) -> Result<Vec<String>, String> {
         let configured = cfg.api_base_url.trim().trim_end_matches('/');
         if configured.is_empty() { cfg.api_provider.default_base().to_string() } else { configured.to_string() }
     };
-    let (url, headers) = match cfg.api_provider {
-        ApiProvider::OpenAi | ApiProvider::Custom => {
-            (format!("{base}/models"), vec![("authorization".to_string(), format!("Bearer {key}"))])
-        }
-        ApiProvider::OpenRouter => (format!("{base}/models"), Vec::new()),
-        ApiProvider::Anthropic => (
+    let bearer = vec![("authorization".to_string(), format!("Bearer {key}"))];
+    let (url, headers) = match cfg.api_provider.shape() {
+        // OpenRouter publishes its catalogue without a key; the rest want one.
+        Shape::OpenAi if cfg.api_provider == ApiProvider::OpenRouter => (format!("{base}/models"), Vec::new()),
+        Shape::OpenAi => (format!("{base}/models"), bearer),
+        Shape::Anthropic => (
             format!("{base}/v1/models"),
             vec![("x-api-key".to_string(), key), ("anthropic-version".to_string(), "2023-06-01".to_string())],
         ),
-        ApiProvider::Gemini => (format!("{base}/v1beta/models"), vec![("x-goog-api-key".to_string(), key)]),
+        Shape::Gemini => (format!("{base}/v1beta/models"), vec![("x-goog-api-key".to_string(), key)]),
     };
     let mut request = agent(cfg).get(&url);
     for (k, v) in &headers {
@@ -616,6 +633,86 @@ mod tests {
             let text = plan.body.to_string();
             assert!(text.contains("open chrome"), "{provider:?} lost the command");
             assert!(text.contains("focus_window"), "{provider:?} lost the tool list");
+        }
+    }
+
+    /// DeepSeek publishes the OpenAI shape, so it is that shape plus its own
+    /// address and model — and nothing else.
+    #[test]
+    fn deepseek_is_an_openai_service_with_its_own_address() {
+        let cfg = api_cfg(ApiProvider::DeepSeek);
+        let plan = plan(&cfg, "open chrome", &crate::tools::tools_json(&Config::default()), &[]).unwrap();
+        assert_eq!(plan.url, "https://api.deepseek.com/v1/chat/completions");
+        assert_eq!(plan.headers, vec![("authorization".to_string(), "Bearer sk-test-key".to_string())]);
+        assert_eq!(plan.body["model"], "deepseek-chat");
+        assert_eq!(plan.body["tools"][0]["type"], "function");
+        let names: Vec<&str> = plan.body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["function"]["name"].as_str())
+            .collect();
+        assert!(names.contains(&"focus_window"), "{names:?}");
+        assert!(names.len() > 50, "the whole catalogue should travel to a hosted model");
+        // The old name for the cap: DeepSeek is not a reasoning-family model.
+        assert!(plan.body.get("max_tokens").is_some(), "{}", plan.body);
+        assert!(plan.body.get("max_completion_tokens").is_none());
+    }
+
+    /// DeepSeek picks thinking by model name (deepseek-chat vs
+    /// deepseek-reasoner), so an effort field would be noise at best and a 400
+    /// at worst. Saying "high" must not break the request.
+    #[test]
+    fn thinking_is_only_sent_to_services_that_take_an_effort() {
+        for provider in [ApiProvider::DeepSeek, ApiProvider::Groq, ApiProvider::Mistral, ApiProvider::XAi] {
+            let mut cfg = api_cfg(provider);
+            cfg.api_thinking = Thinking::High;
+            let plan = plan(&cfg, "hello", "[]", &[]).unwrap();
+            assert!(plan.body.get("reasoning_effort").is_none(), "{provider:?} sent an effort");
+            assert!(plan.body.get("reasoning").is_none(), "{provider:?} sent a reasoning object");
+            assert!(plan.body.get("thinking").is_none(), "{provider:?} sent a thinking block");
+        }
+        // OpenAI does take one, and then leaves the temperature alone.
+        let mut cfg = api_cfg(ApiProvider::OpenAi);
+        cfg.api_thinking = Thinking::Medium;
+        let plan = plan(&cfg, "hello", "[]", &[]).unwrap();
+        assert_eq!(plan.body["reasoning_effort"], "medium");
+        assert!(plan.body.get("temperature").is_none());
+    }
+
+    /// DeepSeek's reasoner returns its thinking in `reasoning_content`; a
+    /// service that explains itself should be shown in the log, not dropped.
+    #[test]
+    fn deepseek_reasoning_is_understood() {
+        let body = json!({"choices": [{"message": {
+            "content": "Opening Chrome.",
+            "reasoning_content": "The user wants chrome opened.",
+            "tool_calls": [{"function": {"name": "open_app", "arguments": "{\"app\":\"chrome\"}"}}]
+        }}]});
+        let reply = parse(ApiProvider::DeepSeek, &body).unwrap();
+        assert_eq!(reply.text, "Opening Chrome.");
+        assert_eq!(reply.reasoning.as_deref(), Some("The user wants chrome opened."));
+        assert_eq!(reply.calls[0].name, "open_app");
+    }
+
+    /// Every service in the picker has an address, a starting model and a key
+    /// page — a half-added provider is a dead option in the UI.
+    #[test]
+    fn every_offered_service_is_complete() {
+        let mut bases = Vec::new();
+        for provider in ApiProvider::ALL {
+            let base = provider.default_base();
+            assert!(base.starts_with("http"), "{provider:?}");
+            assert!(!bases.contains(&base), "{provider:?} shares an address with another service");
+            bases.push(base);
+            if provider != ApiProvider::Custom {
+                assert!(!provider.default_model().is_empty(), "{provider:?} has no model");
+                assert!(provider.keys_page().starts_with("https://"), "{provider:?} has no key page");
+                assert!(provider.needs_key());
+            }
+            let cfg = api_cfg(provider);
+            let plan = plan(&cfg, "hello", "[]", &[]).unwrap_or_else(|e| panic!("{provider:?}: {e}"));
+            assert!(plan.url.contains(base.trim_end_matches('/')), "{provider:?}: {}", plan.url);
         }
     }
 

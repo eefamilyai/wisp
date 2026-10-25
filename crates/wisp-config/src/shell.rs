@@ -341,8 +341,12 @@ impl App {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        let width = ui.available_width().min(820.0);
-                        let margin = ((ui.available_width() - width) / 2.0).max(0.0);
+                        // A floating scrollbar overlays the last dozen pixels of the
+                // content; the column stops short of it instead of running under
+                // it, which was clipping the right edge of every card.
+                let usable = (ui.available_width() - 14.0).max(240.0);
+                let width = usable.min(820.0);
+                        let margin = ((usable - width) / 2.0).max(0.0);
                         ui.horizontal_top(|ui| {
                             ui.add_space(margin);
                             ui.vertical(|ui| {

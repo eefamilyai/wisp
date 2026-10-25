@@ -138,7 +138,7 @@ is the **brain**, and there are two to choose from in Settings → Brain.
 
 | | On this PC (default) | A hosted model |
 |---|---|---|
-| What runs | **Needle 3** — 121M parameters, 35 MB | OpenAI, Anthropic, Google Gemini, OpenRouter, or any OpenAI-compatible server (Ollama, LM Studio, vLLM) |
+| What runs | **Needle 3** — 121M parameters, 35 MB | OpenAI, Anthropic, Google Gemini, OpenRouter, DeepSeek, Groq, Mistral, xAI, or any OpenAI-compatible server (Ollama, LM Studio, vLLM, Azure, a gateway) |
 | Cost | Free | Fractions of a cent per command |
 | Speed | Instant for anything with a phrase; a second or two otherwise | A second or two, more with a big model |
 | Private | Completely — nothing leaves the machine | Your command goes to the service you chose |
