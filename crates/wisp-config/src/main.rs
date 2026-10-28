@@ -1277,9 +1277,18 @@ impl App {
             // What each engine is, and whether its model is here. Choosing one
             // with no model used to leave the assistant unable to hear anything.
             for (engine, blurb) in [
-                (SttEngine::Moonshine, "Moonshine - for short commands, English, about a quarter of a second."),
-                (SttEngine::SenseVoice, "SenseVoice - one model, reads Chinese too. Same speed; slightly behind Moonshine on clear speech."),
-                (SttEngine::Whisper, "Whisper - slower, most accurate with a big model. Choose its model below."),
+                (
+                    SttEngine::Moonshine,
+                    "Moonshine - for short commands, English, about a quarter of a second, 135 MB in memory.",
+                ),
+                (
+                    SttEngine::SenseVoice,
+                    "SenseVoice - one model, reads Chinese too. Same speed, 226 MB in memory; slightly behind Moonshine on clear speech.",
+                ),
+                (
+                    SttEngine::Whisper,
+                    "Whisper - not recommended on this build: one 3-second clip measured 39 minutes, and it holds 0.8 GB with medium.en. It is never used automatically.",
+                ),
             ] {
                 let present = match engine {
                     SttEngine::Whisper => wisp_core::whisper_model_path(&self.cfg.whisper_model).exists(),
@@ -1343,7 +1352,7 @@ impl App {
             );
             ui.horizontal(|ui| {
                 ui.add_space(14.0);
-                ui::hint(ui, "When the first transcript leads nowhere it tries the caption you already saw, then another engine, and only then asks you to repeat it.");
+                ui::hint(ui, "When the first transcript leads nowhere it tries the caption you already saw, then another engine, and only then asks you to repeat it. Anything big is let go again once it has spoken.");
             });
             ui.add_space(6.0);
             ui::row(

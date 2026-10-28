@@ -63,17 +63,16 @@ impl Backend {
     /// with three engines installed still ended up re-hearing every failed
     /// command with the slowest of them.
     pub fn others(self) -> Vec<Backend> {
-        [
-            Backend::Moonshine2,
-            Backend::Moonshine,
-            Backend::SenseVoice,
-            Backend::SenseVoiceNano,
-            Backend::Dolphin,
-            Backend::Whisper,
-        ]
-        .into_iter()
-        .filter(|b| *b != self && Stt::installed(*b))
-        .collect()
+        // Whisper is deliberately absent. It is the most accurate recogniser and,
+        // on this build, unusable: one three-second clip was measured at 39
+        // minutes of inference, and shorter tests simply never returned. An
+        // engine that can stall the command thread must never be reached
+        // automatically — least of all as a "second opinion" that is supposed to
+        // be cheaper than asking the person to repeat themselves.
+        [Backend::Moonshine2, Backend::Moonshine, Backend::SenseVoice, Backend::SenseVoiceNano, Backend::Dolphin]
+            .into_iter()
+            .filter(|b| *b != self && Stt::installed(*b))
+            .collect()
     }
 
     /// Parse a name, for `--bench-stt`.
@@ -88,6 +87,49 @@ impl Backend {
             _ => None,
         }
     }
+}
+
+/// How much memory an engine holds while it is loaded.
+///
+/// Measured rather than guessed, because it decides policy now: a second opinion
+/// that costs 800 MB to hold is not worth holding. Whisper `medium.en` is 514 MB
+/// on disk and its process peaked at **804 MB** working set while transcribing a
+/// three-second clip; the sherpa-onnx engines sit at roughly their file size.
+impl Backend {
+    pub fn resident_cost(self, whisper_model: &str) -> u64 {
+        let models = wisp_core::paths::models_dir();
+        let file = |p: std::path::PathBuf| {
+            // A path with no file name resolves to the models folder itself, and
+            // a folder's "length" would quietly read as a free engine.
+            std::fs::metadata(p).ok().filter(|m| m.is_file()).map(|m| m.len()).unwrap_or(0)
+        };
+        let pack = |dir: std::path::PathBuf| {
+            std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.metadata().map(|m| m.len()).unwrap_or(0)).sum::<u64>()
+        };
+        match self {
+            // Weights plus the float work buffers whisper.cpp builds around them:
+            // measured at 1.56× the file for medium.en.
+            Backend::Whisper => file(wisp_core::whisper_model_path(whisper_model)) * 3 / 2,
+            Backend::Moonshine => pack(wisp_core::moonshine_pack_dir(wisp_core::MOONSHINE_PACKS[0])),
+            Backend::Moonshine2 => pack(wisp_core::moonshine_v2_dir()),
+            Backend::SenseVoice => pack(models.join("sensevoice").join(wisp_core::SENSEVOICE_PACK)),
+            Backend::SenseVoiceNano => pack(models.join("sensevoice").join(wisp_core::SENSEVOICE_NANO_PACK)),
+            Backend::Dolphin => pack(models.join("dolphin").join(wisp_core::DOLPHIN_PACK)),
+        }
+    }
+}
+
+/// Above this, an engine is borrowed for one attempt and dropped straight after.
+///
+/// The listening engines are kept warm because they are cheap and they load on
+/// the audio thread where a second of latency is felt. Whisper is neither: it is
+/// most of a gigabyte, it is only ever a last-resort second opinion, and leaving
+/// it resident is how the assistant ended up sitting at 800 MB between commands.
+pub const KEEP_BUDGET: u64 = 250 * 1024 * 1024;
+
+/// May an engine this expensive stay in memory between commands?
+pub fn worth_keeping(cost: u64) -> bool {
+    cost <= KEEP_BUDGET
 }
 
 /// Whisper is primed with the words this app acts on, so it spells them the way
@@ -214,7 +256,13 @@ impl Stt {
     pub fn installed(backend: Backend) -> bool {
         let models = wisp_core::paths::models_dir();
         match backend {
-            Backend::Whisper => wisp_core::whisper_model_path("").exists() || models.join("ggml-tiny.en-q5_1.bin").exists(),
+            // A file, not a folder: `whisper_model_path("")` hands back the models
+            // directory when it cannot find a model in it, and `.exists()` on that
+            // made a machine with no Whisper at all report one it could fall back
+            // to.
+            Backend::Whisper => {
+                wisp_core::whisper_model_path("").is_file() || models.join("ggml-tiny.en-q5_1.bin").is_file()
+            }
             Backend::Moonshine => {
                 wisp_core::MOONSHINE_PACKS.iter().any(|p| wisp_core::pack_complete(&wisp_core::moonshine_pack_dir(p)))
             }
@@ -604,6 +652,8 @@ pub struct OtherEars {
     /// Set once every candidate has been tried, so a command that is simply
     /// hard to hear does not reload a model it has already failed with.
     exhausted: bool,
+    /// When an engine was last asked, for [`OtherEars::unload_if_idle`].
+    last_used: Instant,
 }
 
 impl OtherEars {
@@ -621,6 +671,7 @@ impl OtherEars {
             agent_name: cfg.agent_name.clone(),
             whisper_model: cfg.whisper_model.clone(),
             exhausted: false,
+            last_used: Instant::now(),
         }
     }
 
@@ -633,13 +684,20 @@ impl OtherEars {
         if self.exhausted {
             return None;
         }
+        self.last_used = Instant::now();
         while self.at < self.order.len() {
             let backend = self.order[self.at];
             if !matches!(&self.current, Some((b, _)) if *b == backend) {
                 self.current = Some((backend, Stt::with(backend, self.threads, &self.agent_name, &self.whisper_model)));
             }
-            let stt = self.current.as_mut().map(|(_, s)| s).expect("just set");
-            match stt.transcribe(audio) {
+            // Transcription takes the borrow only for as long as the call; the
+            // answer is owned, so the engine can be dropped below without
+            // fighting the borrow checker for it.
+            let heard_it = {
+                let stt = self.current.as_mut().map(|(_, s)| s).expect("just set");
+                stt.transcribe(audio)
+            };
+            match heard_it {
                 Ok(text) if text.trim().is_empty() => {
                     log::info!("second opinion: {} heard nothing", backend.name());
                     self.at += 1;
@@ -649,10 +707,12 @@ impl OtherEars {
                 Ok(text) if wisp_core::fuzzy::squash(&text) == wisp_core::fuzzy::squash(heard) => {
                     log::info!("second opinion: {} agrees ({text:?})", backend.name());
                     self.exhausted = true;
+                    self.let_go(backend);
                     return None;
                 }
                 Ok(text) => {
                     log::info!("second opinion: {} heard {text:?} (was {heard:?})", backend.name());
+                    self.let_go(backend);
                     return Some(text);
                 }
                 Err(e) => {
@@ -663,6 +723,33 @@ impl OtherEars {
         }
         self.exhausted = true;
         None
+    }
+
+    /// A heavy engine is let go as soon as it has spoken: see [`KEEP_BUDGET`].
+    fn let_go(&mut self, backend: Backend) {
+        if !worth_keeping(backend.resident_cost(&self.whisper_model)) {
+            if let Some((_, _)) = self.current.take() {
+                log::info!(
+                    "{} released after use — {:.1} GB is not worth keeping warm for a retry",
+                    backend.name(),
+                    backend.resident_cost(&self.whisper_model) as f64 / (1024.0 * 1024.0 * 1024.0)
+                );
+            }
+        }
+    }
+
+    /// Drop whatever has not been needed for `idle`.
+    ///
+    /// The listening engines are kept because loading one takes a second and it
+    /// is felt; but "kept for a while" turned into "kept until the window closes",
+    /// and a mis-hearing is not worth several hundred megabytes until reboot.
+    pub fn unload_if_idle(&mut self, idle: std::time::Duration) {
+        if self.current.is_none() || self.last_used.elapsed() < idle {
+            return;
+        }
+        if let Some((backend, _)) = self.current.take() {
+            log::info!("{} unloaded (idle) — it will load again if it is needed", backend.name());
+        }
     }
 }
 
@@ -690,6 +777,87 @@ mod tests {
         );
         // Repeating something from earlier is a repeat, not a loop to be cut.
         assert_eq!(super::clean("Set a timer. Get coffee. Set a timer."), "set a timer. get coffee. set a timer.");
+    }
+
+    /// The rule that keeps the assistant small: a second opinion may cost a
+    /// second of loading, but it may not cost most of a gigabyte of residency.
+    #[test]
+    fn a_heavy_engine_is_borrowed_not_kept() {
+        use super::{worth_keeping, Backend, Stt};
+        let mb = |bytes: u64| bytes as f64 / (1024.0 * 1024.0);
+
+        // The measurement that started this: whisper medium.en, 514 MB on disk,
+        // 804 MB resident. It is let go the moment it has spoken.
+        assert!(!worth_keeping(514 * 1024 * 1024), "514 MB on disk must not be held");
+        assert!(!worth_keeping(804 * 1024 * 1024), "804 MB resident must not be held");
+        // The everyday engines are worth keeping warm; they load far faster than
+        // a command takes and they are asked constantly.
+        assert!(worth_keeping(226 * 1024 * 1024), "SenseVoice is kept");
+        assert!(worth_keeping(135 * 1024 * 1024), "Moonshine v2 is kept");
+
+        // And whatever is installed on this machine costs something: a zero here
+        // means the model path resolved to a folder, which is how a missing model
+        // used to look like a free one.
+        for backend in [Backend::Whisper, Backend::Moonshine2, Backend::SenseVoice] {
+            if Stt::installed(backend) {
+                let cost = backend.resident_cost("");
+                assert!(cost > 0, "{} is installed but costs nothing — the path is wrong", backend.name());
+                println!("{}: {:.0} MB, kept: {}", backend.name(), mb(cost), worth_keeping(cost));
+            }
+        }
+    }
+
+    /// Loads a real engine, so it is ignored by default. Run it with a clip:
+    ///
+    /// ```text
+    /// WISP_CLIP=%APPDATA%\Wisp\clips\cmd-1234-5678ms.wav cargo test -p wisp-agent \
+    ///     --bin Wisp a_heavy_ear_is_let_go -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn a_heavy_ear_is_let_go_after_it_speaks() {
+        use super::{worth_keeping, Backend, OtherEars};
+        let Ok(clip) = std::env::var("WISP_CLIP") else {
+            println!("set WISP_CLIP to a 16 kHz wav");
+            return;
+        };
+        let bytes = std::fs::read(&clip).expect("clip");
+        let audio = crate::wisp_agent_wav(&bytes);
+        let cfg = wisp_core::Config::load();
+        let mut ears = OtherEars::new(&cfg);
+        // Only the engine under test: Whisper is no longer offered automatically,
+        // and this is the one test that drives it deliberately.
+        ears.order = vec![Backend::Whisper];
+        ears.at = 0;
+        let cost = Backend::Whisper.resident_cost(&cfg.whisper_model);
+        println!("whisper costs {:.0} MB, worth keeping: {}", cost as f64 / 1048576.0, worth_keeping(cost));
+        let before = own_working_set();
+        let heard = ears.listen_again(&audio, "words nobody said");
+        let after = own_working_set();
+        println!("{heard:?}; working set {} MB -> {} MB", before / 1048576, after / 1048576);
+        if !worth_keeping(cost) {
+            assert!(ears.current.is_none(), "a heavy engine must not be kept");
+            assert!(after < before + 64 * 1024 * 1024, "the memory must come back");
+        }
+    }
+
+    /// This process's working set, for the test above.
+    fn own_working_set() -> u64 {
+        use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+        use windows::Win32::System::Threading::GetCurrentProcess;
+        unsafe {
+            let mut counters = PROCESS_MEMORY_COUNTERS::default();
+            let ok = GetProcessMemoryInfo(
+                GetCurrentProcess(),
+                &mut counters,
+                std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+            );
+            if ok.is_ok() {
+                counters.WorkingSetSize as u64
+            } else {
+                0
+            }
+        }
     }
 
     #[test]

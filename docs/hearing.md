@@ -74,6 +74,31 @@ That last line is deliberate. This path runs without the model, so a wrong match
 runs the wrong function with nobody to catch it: two wrong words is a different
 sentence that happens to share a shape, and guessing is worse than asking.
 
+## What the extra ears cost in memory
+
+Nothing, until they are needed — and then only briefly.
+
+| Engine | In memory | Kept? |
+|---|---|---|
+| The streaming caption model | ~130 MB | while listening, it is what draws the caption |
+| Moonshine v2 | 135 MB | yes, it loads in 1.3 s and is asked often |
+| SenseVoice | 226 MB | yes, same |
+| Whisper `medium.en` | **804 MB** | **no** — loaded for one attempt, dropped as soon as it has spoken |
+
+Whisper is the one that matters. Its `medium.en` weights are 514 MB on disk and
+804 MB resident, and it used to be both the only second opinion and a permanent
+one: one mis-heard command could leave the assistant holding most of a gigabyte
+until it was closed. Anything over 250 MB is now borrowed, and anything at all is
+let go after ten minutes of quiet.
+
+**And it is no longer reached automatically.** Testing this build turned up
+something worse than the memory: one three-second clip took **39 minutes** of
+inference, and shorter attempts simply never returned at all. An engine that can
+stall the thread that answers commands must not be tried as a "cheaper than
+repeating yourself" second opinion, so Whisper is out of that list. It remains
+selectable as your engine — the model is yours — but Settings says what it
+measured, in the same place the choice is made.
+
 ## Picking an engine
 
 Settings → Listening lists the engines, whether each one's models are actually on

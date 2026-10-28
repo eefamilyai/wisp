@@ -270,13 +270,22 @@ scheduler ─► alarms · reminders · to-dos · calendar events
 
 ### Resource use (measured on a Ryzen 5 2600)
 
-* Idle: **~45 MB RAM, ~1.5 % of one core** — the wake-word spotter. Whisper,
-  Needle and the voice are only loaded while needed and are freed after 60 s of
-  quiet.
+* Idle: **~60 MB RAM, ~1.5 % of one core** — the wake-word spotter and the audio
+  callback. Every model is loaded when it is needed and freed again after ten
+  minutes of quiet (`unload_after_secs`).
+* Listening, while in use: **~240 MB** — the chosen engine plus the streaming
+  caption model. SenseVoice is 226 MB, Moonshine v2 is 135 MB.
+* Second opinions are **borrowed, not kept**: an engine costing more than 250 MB
+  is dropped the moment it has spoken. Whisper `medium.en` is the case that
+  matters — 514 MB on disk, **804 MB resident**, which is where a Wisp process at
+  800 MB came from. It is only ever reached when every cheaper engine has already
+  failed on the same clip.
+* Settings is a separate window with no models in it: **~100 MB** while open.
 * Speech → text: ~0.2–0.4 s. Needle: instant for obvious commands, ~1.5–2.5 s
   otherwise (lower the depth in Settings to speed it up). A hosted model is
   0.5–3 s depending on the model and the thinking level.
-* Piper voice: ~0.3 s to synthesise a short reply.
+* Piper voice: ~0.3 s to synthesise a short reply; 60 MB resident while it is
+  loaded.
 
 ## Building
 

@@ -129,7 +129,12 @@ pub fn moonshine_installed() -> bool {
 pub fn whisper_model_path(requested: &str) -> std::path::PathBuf {
     let dir = paths::models_dir();
     let want = dir.join(requested);
-    if want.exists() {
+    // An empty name means "any model in this folder". `dir.join("")` is the
+    // folder itself, which of course exists, so asking whether the *chosen* model
+    // is there has to be skipped when there is nothing chosen — otherwise this
+    // handed back a directory, and every "is Whisper installed?" question was
+    // answered yes by a folder.
+    if !requested.trim().is_empty() && want.exists() {
         return want;
     }
     let mut found: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)

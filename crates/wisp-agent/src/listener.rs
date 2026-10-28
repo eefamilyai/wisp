@@ -141,14 +141,27 @@ pub fn run(cfg: Config, shared: Arc<Shared>, apps: Arc<RwLock<AppIndex>>, tts: A
         let tts = tts.clone();
         let speaker = speaker.clone();
         let models = models.clone();
+        let idle = Duration::from_secs(cfg.unload_after_secs.max(5));
         std::thread::Builder::new()
             .name("commands".into())
             .spawn(move || {
                 let mut brain = Brain::new(models.join(wisp_core::NEEDLE_MODEL), cfg.needle_depth);
                 // The other ears. Nothing is loaded until a command has actually
-                // been misunderstood.
+                // been misunderstood, and anything they load is dropped again
+                // when it goes quiet: a mis-hearing is not worth several hundred
+                // megabytes until the window closes.
                 let mut ears = crate::stt::OtherEars::new(&cfg);
-                while let Ok((spoken, audio)) = cmd_rx.recv() {
+                loop {
+                    // Wake every few seconds so a loaded engine can be released
+                    // while nobody is talking.
+                    let (spoken, audio) = match cmd_rx.recv_timeout(Duration::from_secs(5)) {
+                        Ok(next) => next,
+                        Err(RecvTimeoutError::Timeout) => {
+                            ears.unload_if_idle(idle);
+                            continue;
+                        }
+                        Err(RecvTimeoutError::Disconnected) => break,
+                    };
                     let mut said = handle_command(
                         &spoken.command,
                         &cfg,
