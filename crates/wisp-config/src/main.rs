@@ -541,14 +541,6 @@ impl App {
         self.drafts.insert(key.to_string(), text);
     }
 
-    /// Throw away the buffers belonging to a function that no longer exists.
-    /// Keys are built as `"<kind>:<name>"`, so the whole key is compared —
-    /// matching on the tail alone also threw away the buffers of any other
-    /// function whose name happened to end with this one's.
-    fn forget_buffers(&mut self, name: &str) {
-        self.drafts.retain(|k, _| !k.ends_with(&format!(":{name}")));
-    }
-
     /// The dashboard: is it running, what can it do, and is it healthy.
     fn tab_home(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let t = ui::theme(ui);
@@ -2687,11 +2679,16 @@ impl App {
                 // (parameters, phrases) need an editing buffer of their own, and
                 // that means touching `self` while the function is borrowed.
                 let mut tool = self.cfg.custom_tools[i].clone();
-                let name = tool.name.clone();
                 let label =
                     if tool.enabled { pretty_name(&tool.label()) } else { format!("{} (off)", pretty_name(&tool.label())) };
+                // The card is identified by its position, never by the name
+                // inside it. The name is edited *within* the card, and an id that
+                // follows it gives the whole subtree a new identity on every
+                // keystroke: the box the person is typing in stops existing, and
+                // the next frame hands focus back to nobody. That was the "it
+                // deselects after one letter" bug.
                 egui::CollapsingHeader::new(label)
-                    .id_salt(format!("fn{name}"))
+                    .id_salt(format!("fn{i}"))
                     .default_open(true)
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
@@ -2708,7 +2705,7 @@ impl App {
                         hint(ui, "Needle reads this to decide when to use it, so say it plainly.");
                         ui.horizontal(|ui| {
                             ui.label("parameters");
-                            let key = format!("params:{name}");
+                            let key = format!("params:{i}");
                             let mut params = self.buffer(&key, &tool.params.join(", "));
                             if ui.add(egui::TextEdit::singleline(&mut params).hint_text("query").desired_width(240.0)).changed() {
                                 tool.params = params
@@ -2777,7 +2774,7 @@ impl App {
                             for si in 0..steps {
                                 let step = &mut tool.steps[si];
                                 ui.horizontal(|ui| {
-                                    egui::ComboBox::from_id_salt(format!("step{name}-{si}"))
+                                    egui::ComboBox::from_id_salt(format!("step{i}-{si}"))
                                         .width(160.0)
                                         .selected_text(step.kind.label())
                                         .show_ui(ui, |ui| {
@@ -2827,7 +2824,7 @@ impl App {
                                 ),
                             );
                         }
-                        let phrase_key = format!("phrases:{name}");
+                        let phrase_key = format!("phrases:{i}");
                         let mut phrases = self.buffer(&phrase_key, &tool.phrases.join("\n"));
                         ui.label("say any of these");
                         phrases_field(ui, &mut phrases, &mut tool.phrases);
@@ -2857,7 +2854,11 @@ impl App {
         });
         if let Some(i) = delete {
             let removed = self.cfg.custom_tools.remove(i);
-            self.forget_buffers(&removed.name);
+            // Drafts are keyed by position, and removing one moves every later
+            // function up: keeping them would show one card's half-typed text in
+            // another's field. They are mirrors of the stored values, so dropping
+            // them costs nothing.
+            self.drafts.clear();
             self.toast(format!("Removed \"{}\" — save to apply", pretty_name(&removed.label())), true);
         }
         if let Some(i) = try_it {
@@ -3220,6 +3221,48 @@ mod typing_tests {
         frame(&ctx, vec![press_enter()], |ui| phrases_field(ui, &mut draft, &mut stored));
         assert_eq!(stored.len(), 2);
         assert!(draft.ends_with('\n'), "{draft:?}");
+    }
+
+    /// The card around a function's name field, exactly as the Functions page
+    /// builds it. `salt_from_text` chooses between the id that follows the name —
+    /// what the page used to do — and the fixed one it does now.
+    fn card(ui: &mut egui::Ui, text: &mut String, salt_from_text: bool) -> egui::Response {
+        let salt = if salt_from_text { format!("fn{text}") } else { "fn0".to_string() };
+        let mut field = None;
+        egui::CollapsingHeader::new("Card").id_salt(salt).default_open(true).show(ui, |ui| {
+            field = Some(ui.add(egui::TextEdit::singleline(text)));
+        });
+        field.expect("the field")
+    }
+
+    /// Does the name box still have focus one keystroke later?
+    fn focus_survives_a_keystroke(salt_from_text: bool) -> bool {
+        let ctx = egui::Context::default();
+        let mut text = String::new();
+        for _ in 0..2 {
+            frame(&ctx, Vec::new(), |ui| card(ui, &mut text, salt_from_text));
+        }
+        // Focus the box, type one character, then look at where focus is.
+        let first = frame(&ctx, Vec::new(), |ui| card(ui, &mut text, salt_from_text));
+        first.request_focus();
+        frame(&ctx, vec![egui::Event::Text("h".into())], |ui| card(ui, &mut text, salt_from_text));
+        let after = frame(&ctx, Vec::new(), |ui| card(ui, &mut text, salt_from_text));
+        assert_eq!(text, "h", "the keystroke must reach the box");
+        ctx.memory(|m| m.focused()) == Some(after.id)
+    }
+
+    /// What the user reported: "when I type into the new function name box, after
+    /// pressing one key it deselects my box."
+    ///
+    /// The card's id was built from the function's name — the very text being
+    /// edited inside it — so the first keystroke gave the whole subtree a new
+    /// identity. egui keeps focus by widget id, so the box that had focus no
+    /// longer existed on the next frame and focus fell back to nothing. The id is
+    /// now the card's position, which no keystroke can change.
+    #[test]
+    fn a_card_identified_by_the_name_it_edits_loses_focus() {
+        assert!(!focus_survives_a_keystroke(true), "this test no longer reproduces the bug");
+        assert!(focus_survives_a_keystroke(false), "a fixed id must keep focus");
     }
 }
 
