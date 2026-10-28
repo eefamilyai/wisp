@@ -1012,7 +1012,7 @@ pub fn tools_json_widened(cfg: &Config, command: &str) -> String {
 
 /// Is this phrased as a question? Cheap and deliberately narrow: it only has to
 /// decide whether the search tool travels with the prompt.
-fn looks_like_a_question(command: &str) -> bool {
+pub fn looks_like_a_question(command: &str) -> bool {
     const ASKS: [&str; 8] = ["what", "who", "whos", "when", "where", "why", "how", "which"];
     let first = command
         .split_whitespace()
@@ -1084,14 +1084,7 @@ pub fn match_phrases(cfg: &Config, text: &str, keep: &dyn Fn(&str) -> bool) -> O
         // "step" are one edit apart and mean different things.
         let (captures, exact) = match match_phrase(pattern, text) {
             Some(caps) => (caps, true),
-            None if !pattern.contains('{') && crate::fuzzy::squash(pattern).chars().count() >= 8 => {
-                let spoken = crate::fuzzy::squash(text);
-                let want = crate::fuzzy::squash(pattern);
-                if crate::fuzzy::distance(&spoken, &want) > 2 || crate::fuzzy::similarity(&spoken, &want) < 0.78 {
-                    return;
-                }
-                (Vec::new(), false)
-            }
+            None if !pattern.contains('{') && heard_well_enough(pattern, text) => (Vec::new(), false),
             None => return,
         };
         // Exact wording always outranks a fuzzy hit.
@@ -1119,6 +1112,70 @@ pub fn match_any_phrase(cfg: &Config, text: &str) -> Option<PhraseHit> {
     match_phrases(cfg, text, &|_| true)
 }
 
+/// Was this phrase heard, allowing for the way speech recognition mangles words?
+///
+/// Two comparisons, because phrases fail in two different ways. A whole phrase —
+/// "disengage" heard as "this engage" — is compared with the spaces removed, by
+/// how many letters differ. A phrase of several words is compared word by word
+/// instead: "hibernate the computer" heard as "hibernet the computer" is one
+/// mangled word in an otherwise perfect sentence, and the whole-string comparison
+/// rejects it because the letters that differ are late in a long word.
+///
+/// Both are deliberately tight. This path runs *without* the model, so a wrong
+/// match acts on the wrong command with no chance to notice.
+fn heard_well_enough(pattern: &str, text: &str) -> bool {
+    let (spoken, want) = (crate::fuzzy::squash(text), crate::fuzzy::squash(pattern));
+    // One word: the whole string, and only for long ones. "stop" and "step" are
+    // one letter apart and mean opposite things.
+    if !want.contains(' ')
+        && want.len() >= 8
+        && crate::fuzzy::distance(&spoken, &want) <= 2
+        && crate::fuzzy::similarity(&spoken, &want) >= 0.78
+    {
+        return true;
+    }
+    words_heard_well_enough(pattern, text)
+}
+
+/// Word by word: the same words in the same order, with at most one of them
+/// mangled.
+///
+/// The filler words both sides may carry are dropped first — "hibernate a
+/// computer", "hibernate the computer" and "hibernate computer" are one command —
+/// and the tolerance scales with the word: a long word may lose two letters, a
+/// short one one, and anything under five letters must be exact. Only one word may
+/// be wrong, because two wrong words is a different sentence that happens to share
+/// a shape, and acting on that unasked would be worse than asking.
+fn words_heard_well_enough(pattern: &str, text: &str) -> bool {
+    let words = |s: &str| -> Vec<String> {
+        crate::fuzzy::strip_filler(s).split(' ').filter(|w| !w.is_empty()).map(String::from).collect()
+    };
+    let (want, said) = (words(pattern), words(text));
+    // Two words at least: a single short word is too easy to confuse with another
+    // one, and short single-word phrases are the whole "stop"/"step" problem.
+    if want.len() < 2 || want.len() != said.len() {
+        return false;
+    }
+    let mut slips = 0;
+    for (want, said) in want.iter().zip(&said) {
+        if want == said {
+            continue;
+        }
+        let allowed = match want.chars().count() {
+            0..=4 => 0,
+            5..=7 => 1,
+            _ => 2,
+        };
+        if allowed == 0 || crate::fuzzy::distance(want, said) > allowed {
+            return false;
+        }
+        slips += 1;
+    }
+    // Zero slips is the same phrase said with a different article, which is the
+    // same command.
+    slips <= 1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1135,6 +1192,43 @@ mod tests {
         );
         assert_eq!(match_phrase("shut down the computer", "shut down the computer"), Some(vec![]));
         assert_eq!(match_phrase("shut down the computer", "shut down the computer now"), None);
+    }
+
+    /// The function somebody added themselves, said the way a person says it and
+    /// heard the way this machine heard it. Their own phrases are the only thing
+    /// standing between a new function and the model, so they have to survive a
+    /// stray article and a mangled long word.
+    #[test]
+    fn a_hand_added_function_survives_being_heard() {
+        let mut cfg = Config::default();
+        cfg.custom_tools.push(CustomTool {
+            enabled: true,
+            name: "hibernate".into(),
+            description: "Hibernate the computer".into(),
+            kind: CustomKind::PowerShell,
+            target: "shutdown.exe /h".into(),
+            phrases: vec!["hibernate".into(), "hibernate the computer".into()],
+            reply: "Hibernating".into(),
+            ..Default::default()
+        });
+
+        // Said plainly, both ways round.
+        for said in ["hibernate", "Hibernate.", "hibernate the computer", "hibernate a computer", "hibernate this computer", "hibernate the computer please"] {
+            let hit = match_any_phrase(&cfg, said).unwrap_or_else(|| panic!("{said:?} matched nothing"));
+            assert_eq!(hit.tool, "hibernate", "{said:?}");
+        }
+        // Heard with one long word mangled — what the caption and the second ear
+        // actually produce for this speaker. A different *real* word in its place
+        // ("hibernating the computer") is deliberately left to the model: it is a
+        // guess, and guessing here runs the function without asking anyone.
+        for said in ["hibernet the computer", "hybernate the computer", "hybernite the computer"] {
+            let hit = match_any_phrase(&cfg, said).unwrap_or_else(|| panic!("{said:?} matched nothing"));
+            assert_eq!(hit.tool, "hibernate", "{said:?}");
+        }
+        // A different long sentence that shares a word is not this function.
+        assert!(match_any_phrase(&cfg, "what is a computer").is_none_or(|h| h.tool != "hibernate"));
+        // Two mangled words is a different sentence, not a guess.
+        assert!(match_any_phrase(&cfg, "hibernet a compooter").is_none_or(|h| h.tool != "hibernate"));
     }
 
     #[test]

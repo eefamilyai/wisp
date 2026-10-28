@@ -215,6 +215,80 @@ pub struct Decision {
     pub millis: u128,
 }
 
+/// Turns of phrase that mean "I could not make out what you said".
+///
+/// A hosted model handed a mis-heard sentence does the polite thing: it
+/// apologises and asks a question. From the outside that looks like an answer —
+/// it is a whole sentence — and treating it as one is why "hibernate a computer"
+/// came back as "did you mean shut it down, restart it, or put it to sleep?" with
+/// no second attempt at hearing it: the assistant had replied, so nothing else
+/// was tried, though it had not understood a word. Written without apostrophes
+/// because the reply is compared against [`crate::fuzzy::normalize`]d text.
+const MISHEARD: &[&str] = &[
+    "didnt catch",
+    "did not catch",
+    "didnt quite catch",
+    "didnt get that",
+    "did not get that",
+    "didnt understand",
+    "did not understand",
+    "couldnt understand",
+    "could not understand",
+    "couldnt make out",
+    "could not make out",
+    "didnt quite get",
+    "not sure what you mean",
+    "not sure what you meant",
+    "not sure what was said",
+    "not sure i follow",
+    "not sure i understood",
+    "not sure i caught",
+    "not sure what you asked",
+    "couldnt quite catch",
+    "didnt quite hear",
+    "didnt quite understand",
+    "did you mean",
+    "could you repeat",
+    "can you repeat",
+    "say that again",
+    "what did you say",
+    "misheard",
+    "garbled",
+];
+
+impl Decision {
+    /// Did the assistant actually understand `command`?
+    ///
+    /// Anything it does counts. So does anything it *says*, with two exceptions,
+    /// both of them the model trying to work out what it was asked rather than
+    /// answering:
+    ///
+    /// * a reply that complains it could not make out the words;
+    /// * a reply that asks something back, when the sentence it was given was not
+    ///   itself a question. "Did you mean hibernate the computer, Jaryl?" is not an
+    ///   answer to "ierne the computer", however helpful it looks in print — it is
+    ///   the sound of two recognisers disagreeing and nobody noticing.
+    ///
+    /// That distinction is what lets the agent try another ear before answering —
+    /// see `listener::handle_command`.
+    pub fn understood(&self, command: &str) -> bool {
+        if !self.actions.is_empty() {
+            return true;
+        }
+        let Some(answer) = self.answer.as_deref().filter(|a| !a.trim().is_empty()) else { return false };
+        if sounds_misheard(answer) {
+            return false;
+        }
+        !(answer.contains('?') && !tools::looks_like_a_question(command))
+    }
+}
+
+/// Does this reply say the words could not be made out?
+pub fn sounds_misheard(answer: &str) -> bool {
+    let heard = crate::fuzzy::normalize(answer);
+    !heard.is_empty() && MISHEARD.iter().any(|m| heard.contains(m))
+}
+
 pub struct Brain {
     model_path: PathBuf,
     depth: usize,
@@ -464,6 +538,12 @@ impl Brain {
     /// "and the other one". Bounded: three exchanges, and only the words.
     fn remember(&mut self, command: &str, decision: &Decision) {
         if decision.via != Via::Api {
+            return;
+        }
+        // An apology for words that were not understood is not context. Three
+        // mis-hearings in a row used to fill the whole history with them, which
+        // taught the model that this conversation was mostly confusion.
+        if !decision.understood(command) {
             return;
         }
         let said = match &decision.answer {
@@ -1266,6 +1346,59 @@ mod tests {
     fn index() -> AppIndex {
         let e = |n: &str| AppEntry { name: n.into(), app_id: Some(n.into()), path: None, exe: None };
         AppIndex::from_names([e("Google Chrome"), e("Spotify"), e("Discord"), e("Visual Studio Code"), e("Steam")])
+    }
+
+    /// A reply that apologises for not making out the words is not an answer,
+    /// and neither is a question back to something that was not a question.
+    #[test]
+    fn a_mishearing_is_not_understanding() {
+        let said = |command: &str, answer: &str| {
+            Decision {
+                actions: Vec::new(),
+                via: Via::Api,
+                answer: Some(answer.to_string()),
+                reasoning: None,
+                millis: 0,
+            }
+            .understood(command)
+        };
+
+        // The replies this machine actually got for "hibernate a computer", heard
+        // as "ierne the computer", "ibeat the computer" and "ibeneat the computer".
+        assert!(!said("ierne the computer", "Did you mean hibernate the computer, Jaryl? Just say the word and I'll do it."));
+        assert!(!said(
+            "ibeat the computer",
+            "Not sure I caught that, Jaryl — do you want me to restart the computer, or did you mean something else?"
+        ));
+        assert!(!said(
+            "ibeneat the computer",
+            "I didn't quite catch that, Jaryl. Did you want me to shut the computer down, or something else?"
+        ));
+        assert!(!said(
+            "ibeneat the computer",
+            "Sorry Jaryl, I didn't quite catch that. Do you want me to open something on the computer?"
+        ));
+        // A clarification with no question mark is still a clarification.
+        assert!(!said("erne the computer", "I didn't catch that."));
+
+        // A real answer counts, questions included, when a question was asked.
+        assert!(said("what is the haber process", "It makes ammonia from nitrogen and hydrogen. Do you want the whole story?"));
+        assert!(said("what time is it", "It's 4 pm."));
+        // ...and a plain statement to a plain command is an answer too.
+        assert!(said("open spotify", "Spotify is open."));
+
+        // Something done is understood even with nothing said.
+        let acted = Decision {
+            actions: vec![Action::OpenApp("Spotify".into())],
+            via: Via::Instant,
+            answer: None,
+            reasoning: None,
+            millis: 0,
+        };
+        assert!(acted.understood("open spotify"));
+        // Nothing said at all is not an understanding either.
+        let silent = Decision { actions: Vec::new(), via: Via::Needle, answer: None, reasoning: None, millis: 0 };
+        assert!(!silent.understood("open spotify"));
     }
 
     #[test]

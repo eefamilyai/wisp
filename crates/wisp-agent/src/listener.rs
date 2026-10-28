@@ -11,7 +11,7 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use wisp_core::apps::AppIndex;
-use wisp_core::brain::{Action, Brain};
+use wisp_core::brain::{Action, Brain, Decision};
 use wisp_core::{actions, wake, Config};
 use webrtc_vad::{SampleRate, Vad, VadMode};
 
@@ -74,6 +74,58 @@ impl Segment {
     }
 }
 
+/// One command, as two recognisers heard it.
+///
+/// `command` is what the engine that answers made of it; `caption` is what the
+/// streaming model had on screen while the person was still talking. They are
+/// different models with different weaknesses, and the caption has already run by
+/// the time this is built, so keeping it costs nothing and settles an argument
+/// that used to end in "sorry, I didn't catch that".
+struct Spoken {
+    command: String,
+    caption: String,
+}
+
+impl Spoken {
+    fn new(command: String, caption: String) -> Self {
+        Self { command, caption: caption.trim().to_string() }
+    }
+
+    /// The caption, when it is worth a second attempt: it says something the
+    /// command does not, and enough of it to act on.
+    fn worth_replaying(&self) -> Option<&str> {
+        let caption = self.caption.trim();
+        if !has_words(caption) {
+            return None;
+        }
+        // The same words, however the two engines punctuated them, is not a
+        // second opinion — it is the same answer twice.
+        let (a, b) = (wisp_core::fuzzy::squash(caption), wisp_core::fuzzy::squash(&self.command));
+        (a != b).then_some(caption)
+    }
+}
+
+/// What came of one attempt to understand a command.
+enum Heard {
+    /// Something was done, or answered. It has been said out loud already.
+    Done,
+    /// Nothing was made of it — and nothing was said. The line is held back so
+    /// another ear can be tried first, and only read out if neither of them does
+    /// any better than a puzzled apology.
+    Unclear(String),
+    /// The brain could not place the words and fell back to searching for them.
+    /// That is a guess at what was said, so it is kept in hand rather than opening
+    /// a browser on it: if another ear hears the real command, this never runs.
+    Held(Decision),
+}
+
+impl Heard {
+    /// Should another ear be tried before this is acted on or said?
+    fn wants_another_ear(&self) -> bool {
+        !matches!(self, Heard::Done)
+    }
+}
+
 pub fn run(cfg: Config, shared: Arc<Shared>, apps: Arc<RwLock<AppIndex>>, tts: Arc<Tts>, ctl: Receiver<Ctl>) {
     let models = wisp_core::paths::models_dir();
     // Everything slow — the model, the actions, the reply — runs on this thread.
@@ -81,7 +133,7 @@ pub fn run(cfg: Config, shared: Arc<Shared>, apps: Arc<RwLock<AppIndex>>, tts: A
     // 20 seconds) stalled the microphone and threw the next utterance away.
     // Lets a multi-step function speak as it goes, not only at the end.
     let speaker = crate::tts::AgentVoice::new(tts.clone(), shared.clone());
-    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<(String, Vec<f32>)>();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<(Spoken, Vec<f32>)>();
     {
         let cfg = cfg.clone();
         let apps = apps.clone();
@@ -93,32 +145,55 @@ pub fn run(cfg: Config, shared: Arc<Shared>, apps: Arc<RwLock<AppIndex>>, tts: A
             .name("commands".into())
             .spawn(move || {
                 let mut brain = Brain::new(models.join(wisp_core::NEEDLE_MODEL), cfg.needle_depth);
-                // The second opinion. Only loaded if it is ever needed, and only
-                // used when the fast engine's transcript leads nowhere — which is
-                // where accuracy is worth seconds.
-                let mut careful: Option<Stt> = None;
-                let opinion = Stt::resolve(&cfg).second_opinion();
-                if let Some(b) = opinion {
-                    log::info!("second opinion: {} (when a command is not understood)", b.name());
-                }
-                while let Ok((mut command, audio)) = cmd_rx.recv() {
-                    let outcome =
-                        handle_command(&command, &cfg, &mut brain, &apps, &shared, &tts, speaker.as_ref());
-                    if !outcome && audio.len() > crate::audio::RATE as usize / 3 {
-                        if careful.is_none() {
-                            careful = opinion
-                                .map(|b| Stt::with(b, cfg.threads, &cfg.agent_name, &cfg.whisper_model));
+                // The other ears. Nothing is loaded until a command has actually
+                // been misunderstood.
+                let mut ears = crate::stt::OtherEars::new(&cfg);
+                while let Ok((spoken, audio)) = cmd_rx.recv() {
+                    let mut said = handle_command(
+                        &spoken.command,
+                        &cfg,
+                        &mut brain,
+                        &apps,
+                        &shared,
+                        &tts,
+                        speaker.as_ref(),
+                    );
+                    // There are two more ways to hear the same sentence, and both
+                    // are cheaper than asking the person to say it again.
+                    //
+                    // The first is the live caption, which has already run: while
+                    // they were speaking, a streaming model was showing the words
+                    // on screen. It is a different recogniser from the one that
+                    // answers, so when the answer came back "I didn't catch that"
+                    // and the caption plainly reads "hibernate a computer", the
+                    // caption is the one to believe. It costs nothing and needs no
+                    // model loaded.
+                    if said.wants_another_ear() {
+                        if let Some(caption) = spoken.worth_replaying() {
+                            log::info!(
+                                "the caption heard {caption:?} (the answer heard {:?}); listening to it instead",
+                                spoken.command
+                            );
+                            said = handle_command(caption, &cfg, &mut brain, &apps, &shared, &tts, speaker.as_ref());
                         }
-                        if let Some(second) = careful.as_mut() {
-                            if let Ok(better) = second.transcribe(&audio) {
-                                if !better.is_empty() && better != command {
-                                    log::info!("second opinion: {better:?} (was {command:?})");
-                                    command = better;
-                                    tts.prepare();
-                                    handle_command(&command, &cfg, &mut brain, &apps, &shared, &tts, speaker.as_ref());
-                                }
-                            }
+                    }
+                    // The second is another engine over the same audio, which is
+                    // where accuracy is worth a third of a second.
+                    if said.wants_another_ear() && audio.len() > crate::audio::RATE as usize / 3 {
+                        if let Some(better) = ears.listen_again(&audio, &spoken.command) {
+                            tts.prepare();
+                            said = handle_command(&better, &cfg, &mut brain, &apps, &shared, &tts, speaker.as_ref());
                         }
+                    }
+                    // Whatever is left: a line to say, or a search that was the
+                    // brain's guess at the words and is now the best anyone has.
+                    match said {
+                        Heard::Done => {}
+                        Heard::Unclear(line) => {
+                            log::info!("nothing understood: {line:?}");
+                            say(&tts, &shared, &line);
+                        }
+                        Heard::Held(decision) => perform(&decision, &cfg, &apps, &shared, &tts, speaker.as_ref()),
                     }
                     shared.set_mode(Mode::Hidden);
                 }
@@ -501,7 +576,11 @@ pub fn run(cfg: Config, shared: Arc<Shared>, apps: Arc<RwLock<AppIndex>>, tts: A
                                     shared.set_mode(Mode::Listening);
                                     tts.prepare();
                                     crate::caption::clear();
-                                    let _ = cmd_tx.send((hit.command.clone(), s.audio.clone()));
+                                    // No caption: the live model only listens from the
+                                    // moment the name is heard, so anything still in
+                                    // `last_caption` belongs to an earlier command.
+                                    let heard = Spoken::new(hit.command.clone(), String::new());
+                                    let _ = cmd_tx.send((heard, s.audio.clone()));
                                     phase = Phase::Idle;
                                     drain(mic.as_ref());
                                 } else {
@@ -536,7 +615,8 @@ pub fn run(cfg: Config, shared: Arc<Shared>, apps: Arc<RwLock<AppIndex>>, tts: A
                             log::info!("heard: {text:?} -> command {command:?}");
                             if has_words(&command) {
                                 crate::caption::clear();
-                                let _ = cmd_tx.send((command.clone(), s.audio.clone()));
+                                let heard = Spoken::new(command.clone(), last_caption.clone());
+                                let _ = cmd_tx.send((heard, s.audio.clone()));
                                 phase = Phase::Idle;
                                 drain(mic.as_ref());
                             } else if has_wake {
@@ -717,7 +797,7 @@ fn handle_command(
     shared: &Shared,
     tts: &Tts,
     speaker: &crate::tts::AgentVoice,
-) -> bool {
+) -> Heard {
     shared.set_mode(Mode::Thinking);
     let index = apps.read().unwrap().clone();
     let decision = brain.decide(command, cfg, &index);
@@ -727,6 +807,33 @@ fn handle_command(
         decision.via,
         decision.millis
     );
+    // The brain could not place the sentence and fell back to searching for it.
+    // Searching for words that were mis-heard finds nothing, so the search is held
+    // rather than opened: another ear may hear the real command, and if none does,
+    // the search runs after all.
+    if decision.via == wisp_core::brain::Via::Fallback && !wisp_core::tools::looks_like_a_question(command) {
+        log::info!("{command:?} is a guess — holding the search until another ear has tried");
+        shared.set_level(0.0);
+        return Heard::Held(decision);
+    }
+    // Nothing to do and nothing understood. A hosted model in this position has
+    // already written the apology — "sorry, I didn't catch that" — and it used to
+    // be said out loud straight away, which ended the attempt. It is held back
+    // instead: there is another recogniser with an opinion on the same audio, and
+    // asking it costs less than making the person repeat themselves.
+    if !decision.understood(command) {
+        let line = personality::spoken_reply(cfg, &[], decision.answer.as_deref());
+        log::info!("nothing understood in {command:?} — holding {line:?} in case another ear can hear it");
+        shared.set_level(0.0);
+        return Heard::Unclear(line);
+    }
+    perform(&decision, cfg, apps, shared, tts, speaker);
+    Heard::Done
+}
+
+/// Do what was decided, and say so.
+fn perform(decision: &Decision, cfg: &Config, apps: &Arc<RwLock<AppIndex>>, shared: &Shared, tts: &Tts, speaker: &crate::tts::AgentVoice) {
+    let index = apps.read().unwrap().clone();
     // Talk back, using the app's real name ("chrome" -> "Google Chrome").
     let real = |n: &str| index.find(n, cfg).map(|(e, _)| e.name.clone()).unwrap_or_else(|| n.to_string());
     let pretty = |a: &Action| match a {
@@ -760,18 +867,23 @@ fn handle_command(
     // A hosted model answers in words of its own; the local one only picks a
     // function, so its reply is still a personality line.
     let reply = personality::spoken_reply(cfg, &outcomes, decision.answer.as_deref());
-    log::info!("reply: {reply:?}");
     let failed = outcomes.iter().any(|o| matches!(o, Outcome::Failed(..)));
+    say_with_mode(tts, shared, &reply, if failed { Mode::Error } else { Mode::Success });
+}
+
+/// Say something out loud, with the bubble up for it.
+fn say(tts: &Tts, shared: &Shared, line: &str) {
+    say_with_mode(tts, shared, line, Mode::Success);
+}
+
+fn say_with_mode(tts: &Tts, shared: &Shared, line: &str, mode: Mode) {
+    log::info!("reply: {line:?}");
     // Set speaking before the mode flips so the bubble stays up for the reply.
     if tts.active() {
         shared.set_speaking(true);
     }
-    tts.say(&reply);
-    shared.set_mode(if failed { Mode::Error } else { Mode::Success });
-    // "Understood" means it actually did something, or said something: an empty
-    // batch with nothing to say is the "I didn't catch that" case, which is
-    // where a second opinion is worth it.
-    !decision.actions.is_empty() || decision.answer.as_ref().is_some_and(|a| !a.trim().is_empty())
+    tts.say(line);
+    shared.set_mode(mode);
 }
 
 /// Throw away audio captured while we were busy thinking.
@@ -802,4 +914,28 @@ fn strip_leading_name(text: &str, cfg: &Config) -> String {
 
 fn secs(s: f32) -> Duration {
     Duration::from_secs_f32(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Spoken;
+
+    /// The caption is only worth replaying when it is a different set of words.
+    #[test]
+    fn the_caption_is_replayed_only_when_it_disagrees() {
+        let case = |command: &str, caption: &str| Spoken::new(command.into(), caption.into()).worth_replaying().map(str::to_string);
+
+        // The case that started this: the answering engine heard nothing useful,
+        // the caption had the right words on screen the whole time.
+        assert_eq!(
+            case("ibeneath the computer", "hibernate a computer").as_deref(),
+            Some("hibernate a computer")
+        );
+        // Punctuation and case are not a disagreement.
+        assert_eq!(case("open chrome", "Open Chrome."), None);
+        // Neither is silence, or a caption with nothing in it.
+        assert_eq!(case("open chrome", ""), None);
+        assert_eq!(case("open chrome", "  "), None);
+        assert_eq!(case("open chrome", "-"), None);
+    }
 }

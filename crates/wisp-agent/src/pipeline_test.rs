@@ -416,3 +416,110 @@ fn kws_on_wavs() {
         println!("{:<20} {:?}  ({:?} cpu for {:.1}s audio)", e.file_name().to_string_lossy(), hit, t.elapsed(), audio.len() as f32 / 16000.0);
     }
 }
+
+/// The case that started this: a function the person added themselves, said out
+/// loud, and mis-heard. The model knew the function perfectly — it was never
+/// given the words.
+///
+/// Replays every clip in `%APPDATA%\Wisp\clips` (or `$WISP_CLIPS`) through the
+/// chain the listener now uses: the configured engine, then the caption that was
+/// on screen while the person was speaking, then any other engine on the PC. It
+/// uses the live config, so the brain is whatever is actually answering.
+///
+/// ```text
+/// cargo test -p wisp-agent --bin Wisp a_mangled_command -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore]
+fn a_mangled_command_is_heard_by_something_else() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let clips = match std::env::var("WISP_CLIPS") {
+        Ok(dir) => std::path::PathBuf::from(dir),
+        Err(_) => std::path::PathBuf::from(std::env::var("APPDATA").unwrap_or_default())
+            .join(wisp_core::PRODUCT)
+            .join("clips"),
+    };
+    if !clips.is_dir() {
+        println!("no clips in {} — set WISP_CLIPS", clips.display());
+        return;
+    }
+    let cfg = Config::load();
+    let apps = AppIndex::load_cache().unwrap_or_default();
+    let mut brain = Brain::new(root.join("models").join(wisp_core::NEEDLE_MODEL), cfg.needle_depth);
+    let mut stt = crate::stt::Stt::new(&cfg);
+    let mut live = crate::live::Live::new(&cfg).ok();
+    let mut ears = crate::stt::OtherEars::new(&cfg);
+
+    // The same judgement the listener makes: a fallback search over words the
+    // brain could not place is a guess, not an understanding.
+    let understood = |decision: &wisp_core::brain::Decision, command: &str| -> bool {
+        decision.understood(command)
+            && !(decision.via == wisp_core::brain::Via::Fallback && !wisp_core::tools::looks_like_a_question(command))
+    };
+    // The clips are command-only, but a name may have leaked into one.
+    let command_of = |text: &str| -> String {
+        match wake::detect(text, &cfg) {
+            Some(hit) if !hit.command.trim().is_empty() => hit.command,
+            _ => text.to_string(),
+        }
+    };
+    let mut files: Vec<_> = std::fs::read_dir(&clips).map(|d| d.flatten().collect::<Vec<_>>()).unwrap_or_default();
+    files.sort_by_key(|e| e.file_name());
+    let mut mangled = 0;
+    let mut rescued = 0;
+    for entry in files.iter().rev().take(8).rev() {
+        let audio = read_wav(&entry.path());
+        // The ear that answers.
+        let heard = stt.transcribe(&audio).unwrap_or_default();
+        // The caption that was on screen at the time.
+        let caption = live.as_mut().and_then(|l| {
+            l.reset();
+            let mut last = String::new();
+            for frame in audio.chunks_exact(480) {
+                if let Some(text) = l.feed(frame) {
+                    last = text;
+                }
+            }
+            if let Some(text) = l.feed(&vec![0f32; 16000]) {
+                last = text;
+            }
+            (!last.trim().is_empty()).then_some(last)
+        });
+        let first = brain.decide(&command_of(&heard), &cfg, &apps);
+        let mut understood_by = if understood(&first, &command_of(&heard)) { "the first ear".to_string() } else { String::new() };
+        let mut why = format!("{:?} via {:?}", first.actions, first.via);
+        if understood_by.is_empty() {
+            mangled += 1;
+            // The caption, exactly as the listener replays it.
+            let caption = caption.unwrap_or_default();
+            if !caption.trim().is_empty() && wisp_core::fuzzy::squash(&caption) != wisp_core::fuzzy::squash(&heard) {
+                let second = brain.decide(&command_of(&caption), &cfg, &apps);
+                if understood(&second, &command_of(&caption)) {
+                    understood_by = format!("the caption ({caption:?})");
+                    why = format!("{:?} via {:?}", second.actions, second.via);
+                }
+            }
+        }
+        if understood_by.is_empty() {
+            if let Some(better) = ears.listen_again(&audio, &heard) {
+                let third = brain.decide(&command_of(&better), &cfg, &apps);
+                if understood(&third, &command_of(&better)) {
+                    understood_by = format!("another engine ({better:?})");
+                    why = format!("{:?} via {:?}", third.actions, third.via);
+                }
+            }
+        }
+        if !understood_by.is_empty() {
+            rescued += 1;
+        }
+        println!(
+            "{:<24} heard {:<30} {:<44} -> {}  {}",
+            entry.file_name().to_string_lossy(),
+            format!("{heard:?}"),
+            if understood_by.is_empty() { "NOTHING UNDERSTOOD".to_string() } else { format!("understood by {understood_by}") },
+            why,
+            first.answer.as_deref().unwrap_or("")
+        );
+    }
+    println!("{mangled} needed a second ear, {rescued} of those were rescued");
+}

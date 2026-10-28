@@ -1308,6 +1308,51 @@ impl App {
                     }
                 });
             }
+            // What happens when the chosen engine mis-hears something. This is
+            // the answer to "it doesn't know my function": usually the function is
+            // fine and the words never arrived.
+            ui::row(
+                ui,
+                "If it mis-hears you",
+                "Another recogniser re-hears the same clip before it gives up",
+                |ui| {
+                    let theme = ui::theme(ui);
+                    let mut shown = false;
+                    if self.cfg.live_transcript && wisp_core::streaming_installed() {
+                        ui::pill(ui, "the caption", theme.ok);
+                        shown = true;
+                    }
+                    for (engine, label) in [
+                        (SttEngine::Moonshine, "Moonshine"),
+                        (SttEngine::SenseVoice, "SenseVoice"),
+                        (SttEngine::Whisper, "Whisper"),
+                    ] {
+                        if engine == self.cfg.stt_engine {
+                            continue;
+                        }
+                        let ready = match engine {
+                            SttEngine::Whisper => wisp_core::whisper_model_path(&self.cfg.whisper_model).exists(),
+                            SttEngine::Moonshine => wisp_core::moonshine_installed(),
+                            SttEngine::SenseVoice => wisp_core::paths::models_dir()
+                                .join("sensevoice")
+                                .join(wisp_core::SENSEVOICE_PACK)
+                                .join("model.int8.onnx")
+                                .exists(),
+                        };
+                        if ready {
+                            ui::pill(ui, label, theme.muted);
+                            shown = true;
+                        }
+                    }
+                    if !shown {
+                        ui::hint(ui, "nothing else installed — it will ask you to say it again");
+                    }
+                },
+            );
+            ui.horizontal(|ui| {
+                ui.add_space(14.0);
+                ui::hint(ui, "When the first transcript leads nowhere it tries the caption you already saw, then another engine, and only then asks you to repeat it.");
+            });
             ui.add_space(6.0);
             ui::row(
                 ui,

@@ -3831,7 +3831,7 @@ dependencies = [
 
 [[package]]
 name = "wisp-agent"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "cpal",
  "log",
@@ -3846,7 +3846,7 @@ dependencies = [
 
 [[package]]
 name = "wisp-config"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "cpal",
  "eframe",
@@ -3858,7 +3858,7 @@ dependencies = [
 
 [[package]]
 name = "wisp-core"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "bzip2 0.6.1",
  "log",
@@ -3875,7 +3875,7 @@ dependencies = [
 
 [[package]]
 name = "wisp-setup"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "eframe",
  "tar",
@@ -3887,7 +3887,7 @@ dependencies = [
 
 [[package]]
 name = "wisp-uninstall"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "wisp-core",
  "wisp-version",
@@ -3895,7 +3895,7 @@ dependencies = [
 
 [[package]]
 name = "wisp-version"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "winresource",
 ]

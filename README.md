@@ -122,6 +122,12 @@ what to say back. Templates for the common ones (Spotify search, night light,
 focus mode, a morning routine, …) are one click away. A Python function prints
 its answer and that answer is spoken.
 
+A function is only as good as the words that reach it, so the phrases are matched
+forgivingly — *"hibernate a computer"*, *"hibernate computer"* and
+*"hibernet the computer"* all reach the same function — and when the transcript
+leads nowhere, another ear hears the clip before anything is said. See
+[docs/hearing.md](docs/hearing.md).
+
 ### Alarms, reminders, to-dos and events
 
 Times are spoken the natural way — *"in 20 minutes"*, *"tomorrow at 9"*,
@@ -168,6 +174,21 @@ detail.
 Moonshine comes from `sherpa-onnx`, the same library the voices already use, so
 there is nothing new to install. Its models are ~270 MB and Settings fetches them
 on demand; until they are there the assistant uses Whisper and says so in the log.
+
+### When it mis-hears you
+
+Any engine can miss an unusual word, and a name you invented for your own
+function is the least likely word of all. So a transcript that leads nowhere is
+not the end of the attempt: the **caption** already on screen is a second
+recogniser that has already run, and another installed engine can re-hear the same
+clip in a third of a second. Only if two of them agree, or all of them fail, is the
+apology said out loud — and the first apology is held back rather than spoken over
+the top of a command that was about to work.
+
+Whisper is tried last, not first: it is the most accurate and about twenty seconds
+a clip on this CPU, against 0.3 s for Moonshine. [docs/hearing.md](docs/hearing.md)
+has the measurements, including four real recordings of one command that the
+selected engine got wrong four times out of four.
 
 ### What each Whisper model costs
 

@@ -51,19 +51,29 @@ impl Backend {
         }
     }
 
-    /// The engine to ask when the first transcript led nowhere.
+    /// Every other recogniser on this PC, best second opinion first.
     ///
-    /// The old answer was always Whisper with the configured model, and that
-    /// model was `large-v3-turbo`: 574 MB and 9.3 seconds a clip on this CPU, to
-    /// re-hear a command that had already failed once. Anything installed that is
-    /// a *different* recogniser is a better second opinion than a slow one, so
-    /// prefer SenseVoice (a different architecture, 0.3 s), then the other
-    /// Moonshine pack, then Whisper — and None when nothing else is installed,
-    /// rather than a second pass that cannot work.
-    pub fn second_opinion(self) -> Option<Backend> {
-        [Backend::SenseVoice, Backend::SenseVoiceNano, Backend::Moonshine, Backend::Whisper]
-            .into_iter()
-            .find(|b| *b != self && Stt::installed(*b))
+    /// Ordered fast-and-accurate first, Whisper last: measured on this machine,
+    /// Moonshine v2 and SenseVoice take 0.3 s for a three-second clip while
+    /// Whisper medium takes about twenty. A second opinion is supposed to cost a
+    /// third of a second, not twenty seconds after the person has already been
+    /// misunderstood once.
+    ///
+    /// Moonshine v2 was missing from this list entirely, which is how a machine
+    /// with three engines installed still ended up re-hearing every failed
+    /// command with the slowest of them.
+    pub fn others(self) -> Vec<Backend> {
+        [
+            Backend::Moonshine2,
+            Backend::Moonshine,
+            Backend::SenseVoice,
+            Backend::SenseVoiceNano,
+            Backend::Dolphin,
+            Backend::Whisper,
+        ]
+        .into_iter()
+        .filter(|b| *b != self && Stt::installed(*b))
+        .collect()
     }
 
     /// Parse a name, for `--bench-stt`.
@@ -195,17 +205,32 @@ impl Stt {
     }
 
     /// Are this engine's model files on disk?
+    ///
+    /// A folder is not a model. Moonshine was tested with `.exists()` on its
+    /// pack directory, so a download that was started and abandoned left an empty
+    /// folder that reported the engine as ready — and every second opinion then
+    /// went to a recogniser that could not load, silently, before falling through
+    /// to Whisper. The check is now the same five files the loader asks for.
     pub fn installed(backend: Backend) -> bool {
         let models = wisp_core::paths::models_dir();
         match backend {
             Backend::Whisper => wisp_core::whisper_model_path("").exists() || models.join("ggml-tiny.en-q5_1.bin").exists(),
-            Backend::Moonshine => wisp_core::moonshine_pack_dir(wisp_core::MOONSHINE_PACKS[0]).exists(),
-            Backend::Moonshine2 => wisp_core::moonshine_v2_installed(),
-            Backend::SenseVoice => models.join("sensevoice").join(wisp_core::SENSEVOICE_PACK).join("model.int8.onnx").exists(),
-            Backend::SenseVoiceNano => {
-                models.join("sensevoice").join(wisp_core::SENSEVOICE_NANO_PACK).join("model.int8.onnx").exists()
+            Backend::Moonshine => {
+                wisp_core::MOONSHINE_PACKS.iter().any(|p| wisp_core::pack_complete(&wisp_core::moonshine_pack_dir(p)))
             }
-            Backend::Dolphin => models.join("dolphin").join(wisp_core::DOLPHIN_PACK).join("model.int8.onnx").exists(),
+            Backend::Moonshine2 => wisp_core::moonshine_v2_installed(),
+            Backend::SenseVoice => {
+                let dir = models.join("sensevoice").join(wisp_core::SENSEVOICE_PACK);
+                dir.join("model.int8.onnx").exists() && dir.join("tokens.txt").exists()
+            }
+            Backend::SenseVoiceNano => {
+                let dir = models.join("sensevoice").join(wisp_core::SENSEVOICE_NANO_PACK);
+                dir.join("model.int8.onnx").exists() && dir.join("tokens.txt").exists()
+            }
+            Backend::Dolphin => {
+                let dir = models.join("dolphin").join(wisp_core::DOLPHIN_PACK);
+                dir.join("model.int8.onnx").exists() && dir.join("tokens.txt").exists()
+            }
         }
     }
 
@@ -560,6 +585,85 @@ fn dedupe_sentences(s: &str) -> String {
         out.push_str(sentence);
     }
     out.trim().to_string()
+}
+
+/// The other ears this PC has, asked one after another until one of them hears
+/// something the first did not.
+///
+/// Kept lazy on purpose: nothing is loaded until a command has already been
+/// misunderstood, and an engine that will not load is stepped over rather than
+/// taking the retry down with it. That second part matters — a half-downloaded
+/// pack used to be reported as installed, and the only sign of it was silence.
+pub struct OtherEars {
+    order: Vec<Backend>,
+    at: usize,
+    current: Option<(Backend, Stt)>,
+    threads: u32,
+    agent_name: String,
+    whisper_model: String,
+    /// Set once every candidate has been tried, so a command that is simply
+    /// hard to hear does not reload a model it has already failed with.
+    exhausted: bool,
+}
+
+impl OtherEars {
+    pub fn new(cfg: &Config) -> Self {
+        let order = Stt::resolve(cfg).others();
+        if !order.is_empty() {
+            let names: Vec<&str> = order.iter().map(|b| b.name()).collect();
+            log::info!("second opinion, if needed: {}", names.join(", then "));
+        }
+        Self {
+            order,
+            at: 0,
+            current: None,
+            threads: cfg.threads,
+            agent_name: cfg.agent_name.clone(),
+            whisper_model: cfg.whisper_model.clone(),
+            exhausted: false,
+        }
+    }
+
+    /// Re-hear the same audio. Returns a transcript that differs from `heard`.
+    ///
+    /// `None` means either that every engine heard the same thing — in which case
+    /// the transcript is probably right and the words really were unclear — or
+    /// that there is nothing left to ask.
+    pub fn listen_again(&mut self, audio: &[f32], heard: &str) -> Option<String> {
+        if self.exhausted {
+            return None;
+        }
+        while self.at < self.order.len() {
+            let backend = self.order[self.at];
+            if !matches!(&self.current, Some((b, _)) if *b == backend) {
+                self.current = Some((backend, Stt::with(backend, self.threads, &self.agent_name, &self.whisper_model)));
+            }
+            let stt = self.current.as_mut().map(|(_, s)| s).expect("just set");
+            match stt.transcribe(audio) {
+                Ok(text) if text.trim().is_empty() => {
+                    log::info!("second opinion: {} heard nothing", backend.name());
+                    self.at += 1;
+                }
+                // Two recognisers agreeing is the end of the argument: a third
+                // will not make the same audio any clearer.
+                Ok(text) if wisp_core::fuzzy::squash(&text) == wisp_core::fuzzy::squash(heard) => {
+                    log::info!("second opinion: {} agrees ({text:?})", backend.name());
+                    self.exhausted = true;
+                    return None;
+                }
+                Ok(text) => {
+                    log::info!("second opinion: {} heard {text:?} (was {heard:?})", backend.name());
+                    return Some(text);
+                }
+                Err(e) => {
+                    log::warn!("second opinion: {} would not load ({e})", backend.name());
+                    self.at += 1;
+                }
+            }
+        }
+        self.exhausted = true;
+        None
+    }
 }
 
 #[cfg(test)]
